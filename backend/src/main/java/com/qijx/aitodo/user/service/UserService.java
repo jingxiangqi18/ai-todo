@@ -92,14 +92,7 @@ public class UserService {
         return response;
     }
 
-    public UserResponse getCurrentUser(String authorizationHeader){
-        if(authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")){
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "缺少登录凭证");
-        }
-
-        String token = authorizationHeader.substring(7);
-        Long userId = jwtService.parseUserId(token);
-
+    public UserResponse getCurrentUser(Long userId){
         User user = userMapper.selectById(userId);
 
         if(user == null){

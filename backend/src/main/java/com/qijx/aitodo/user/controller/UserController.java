@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.qijx.aitodo.user.dto.UserLoginRequest;
 import com.qijx.aitodo.user.dto.UserRegisterRequest;
 import com.qijx.aitodo.user.dto.UserResponse;
+import com.qijx.aitodo.user.service.JwtService;
 import com.qijx.aitodo.user.service.UserService;
 import com.qijx.aitodo.user.dto.UserLoginResponse;
 
@@ -21,9 +22,11 @@ import jakarta.validation.Valid;
 @RequestMapping("/api/users")
 public class UserController {
     private final UserService userService;
+    private final JwtService jwtService;
 
-    public UserController(UserService userService){
+    public UserController(UserService userService, JwtService jwtService){
         this.userService = userService;
+        this.jwtService = jwtService;
     }
 
     @PostMapping("/register")
@@ -39,7 +42,9 @@ public class UserController {
 
     @GetMapping("/me")
     public UserResponse me(@RequestHeader(value = "Authorization", required = false) String authorizationHeader){
-        return userService.getCurrentUser(authorizationHeader);
+        Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
+        
+        return userService.getCurrentUser(userId);
     }
 }
 
