@@ -1,4 +1,4 @@
-package com.qijx.aitodo.user;
+package com.qijx.aitodo.user.dto;
 
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;

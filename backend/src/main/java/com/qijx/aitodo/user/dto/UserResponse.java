@@ -1,4 +1,4 @@
-package com.qijx.aitodo.user;
+package com.qijx.aitodo.user.dto;
 
 import java.time.LocalDateTime;
 
