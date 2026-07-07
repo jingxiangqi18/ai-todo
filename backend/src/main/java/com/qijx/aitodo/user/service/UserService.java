@@ -1,12 +1,12 @@
 package com.qijx.aitodo.user.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.qijx.aitodo.user.User;
-import com.qijx.aitodo.user.UserMapper;
 import com.qijx.aitodo.user.dto.UserLoginRequest;
 import com.qijx.aitodo.user.dto.UserLoginResponse;
 import com.qijx.aitodo.user.dto.UserRegisterRequest;
 import com.qijx.aitodo.user.dto.UserResponse;
+import com.qijx.aitodo.user.entity.User;
+import com.qijx.aitodo.user.mapper.UserMapper;
 
 import java.time.LocalDateTime;
 
