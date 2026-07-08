@@ -73,6 +73,13 @@ const listFilters = reactive({
   priority: ''
 })
 
+const taskPage = reactive({
+  page: 1,
+  size: 10,
+  total: 0,
+  pages: 1
+})
+
 const editDateParts = computed(() => splitDateParts(editForm.dueDate))
 const editTimeParts = computed(() => splitTimeParts(editForm.dueTime))
 
@@ -117,15 +124,7 @@ const doneTasks = computed(() => tasks.value.filter((task) => task.status === 'D
 
 const visibleTasks = computed(() => {
   const source = resolveViewTasks()
-  const keyword = query.value.trim().toLowerCase()
-
-  if (!keyword) {
-    return source
-  }
-
-  return source.filter((task) => {
-    return `${task.title || ''} ${task.description || ''}`.toLowerCase().includes(keyword)
-  })
+  return source
 })
 
 const currentView = computed(() => views.value.find((item) => item.key === activeView.value) || views.value[0])
@@ -155,6 +154,7 @@ const isAuthValid = computed(() => {
 
 const isTaskValid = computed(() => taskForm.title.trim().length > 0 && taskForm.title.trim().length <= 100)
 const hasListFilters = computed(() => Boolean(listFilters.status || listFilters.priority))
+const hasServerQuery = computed(() => Boolean(listFilters.status || listFilters.priority || query.value.trim()))
 
 onMounted(async () => {
   const token = localStorage.getItem('aiTodoToken')
@@ -235,6 +235,8 @@ async function handleCreateTask() {
     })
 
     tasks.value = [created, ...tasks.value]
+    taskPage.total += 1
+    taskPage.pages = Math.max(1, Math.ceil(taskPage.total / taskPage.size))
     taskForm.title = ''
     taskForm.description = ''
     taskForm.priority = 'MEDIUM'
@@ -249,10 +251,27 @@ async function handleCreateTask() {
 }
 
 async function refreshTasks() {
-  tasks.value = await listTasks({
+  const result = await listTasks({
     status: listFilters.status,
-    priority: listFilters.priority
+    priority: listFilters.priority,
+    keyword: query.value.trim(),
+    page: taskPage.page,
+    size: taskPage.size
   })
+
+  if (Array.isArray(result)) {
+    tasks.value = result
+    taskPage.page = 1
+    taskPage.size = result.length || 10
+    taskPage.total = result.length
+    taskPage.pages = 1
+  } else {
+    tasks.value = result.records || []
+    taskPage.page = result.page || 1
+    taskPage.size = result.size || taskPage.size
+    taskPage.total = result.total || 0
+    taskPage.pages = result.pages || 1
+  }
 
   if (selectedTask.value) {
     const latest = tasks.value.find((task) => task.id === selectedTask.value.id)
@@ -296,7 +315,7 @@ function resolveViewTasks() {
     return doneTasks.value
   }
 
-  if (hasListFilters.value) {
+  if (hasServerQuery.value) {
     return tasks.value
   }
 
@@ -306,20 +325,45 @@ function resolveViewTasks() {
 async function setListStatus(status) {
   listFilters.status = status
   activeView.value = 'all'
+  taskPage.page = 1
   await refreshTasks()
 }
 
 async function setListPriority(priority) {
   listFilters.priority = priority
   activeView.value = 'all'
+  taskPage.page = 1
   await refreshTasks()
 }
 
 async function clearListFilters() {
   listFilters.status = ''
   listFilters.priority = ''
+  query.value = ''
   activeView.value = 'all'
+  taskPage.page = 1
   await refreshTasks()
+}
+
+async function applyKeywordSearch() {
+  activeView.value = 'all'
+  taskPage.page = 1
+  await refreshTasks()
+}
+
+async function changePage(page) {
+  if (page < 1 || page > taskPage.pages || page === taskPage.page) {
+    return
+  }
+
+  taskPage.page = page
+  await refreshTasks()
+}
+
+function handlePageSizeChange(event) {
+  taskPage.size = Number(event.target.value)
+  taskPage.page = 1
+  return refreshTasks()
 }
 
 function formatDateKey(value) {
@@ -778,7 +822,8 @@ function priorityText(priority) {
 
         <div class="search-box">
           <Search :size="18" />
-          <input v-model="query" type="search" placeholder="搜索任务" />
+          <input v-model="query" type="search" placeholder="搜索任务" @keyup.enter="applyKeywordSearch" />
+          <button type="button" @click="applyKeywordSearch">搜索</button>
         </div>
       </header>
 
@@ -834,7 +879,7 @@ function priorityText(priority) {
           </div>
         </div>
 
-        <button v-if="hasListFilters" class="filter-clear" type="button" @click="clearListFilters">清除筛选</button>
+        <button v-if="hasServerQuery" class="filter-clear" type="button" @click="clearListFilters">清除筛选</button>
       </div>
 
       <p v-if="errorMessage" class="notice error">{{ errorMessage }}</p>
@@ -876,6 +921,23 @@ function priorityText(priority) {
           <h2>这里还没有任务</h2>
           <p>使用底部输入框添加第一条任务。</p>
         </section>
+      </div>
+
+      <div class="pagination-bar">
+        <div class="page-info">
+          <span>共 {{ taskPage.total }} 条</span>
+          <strong>第 {{ taskPage.page }} / {{ taskPage.pages || 1 }} 页</strong>
+        </div>
+
+        <div class="page-actions">
+          <button type="button" :disabled="taskPage.page <= 1" @click="changePage(taskPage.page - 1)">上一页</button>
+          <button type="button" :disabled="taskPage.page >= taskPage.pages" @click="changePage(taskPage.page + 1)">下一页</button>
+          <select :value="taskPage.size" aria-label="每页数量" @change="handlePageSizeChange">
+            <option :value="10">10 条/页</option>
+            <option :value="20">20 条/页</option>
+            <option :value="50">50 条/页</option>
+          </select>
+        </div>
       </div>
 
       <form class="task-composer" @submit.prevent="handleCreateTask">

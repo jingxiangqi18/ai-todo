@@ -43,7 +43,7 @@ public class TaskService {
         return toResponse(task);
     }
 
-    public TaskPageResponse listMyTasks(Long userId, String status, String priority, Long page, Long size){
+    public TaskPageResponse listMyTasks(Long userId, String status, String priority, String keyword, Long page, Long size){
         if(page == null || page < 1){
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "页码不能小于1");
         }
@@ -62,6 +62,16 @@ public class TaskService {
 
         if(priority != null && !priority.isBlank()){
             queryWrapper.eq(Task::getPriority, resolvePriority(priority));
+        }
+
+        if(keyword != null && !keyword.isBlank()){
+            String trimmedKeyword = keyword.trim();
+
+            queryWrapper.and(wrapper -> wrapper
+                    .like(Task::getTitle, trimmedKeyword)
+                    .or()
+                    .like(Task::getDescription, trimmedKeyword)
+            );
         }
 
         Page<Task> taskPage = taskMapper.selectPage(new Page<>(page, size), queryWrapper);

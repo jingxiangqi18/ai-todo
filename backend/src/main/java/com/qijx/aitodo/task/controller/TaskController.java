@@ -52,12 +52,13 @@ public class TaskController {
         @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
         @RequestParam(required = false) String status,
         @RequestParam(required = false) String priority,
+        @RequestParam(required = false) String keyword,
         @RequestParam(defaultValue = "1") Long page,
         @RequestParam(defaultValue = "10") Long size
     ){
         Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
 
-        return taskService.listMyTasks(userId, status, priority, page, size);
+        return taskService.listMyTasks(userId, status, priority, keyword, page, size);
     }
 
     @GetMapping("/{id}")

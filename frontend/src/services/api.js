@@ -61,6 +61,18 @@ export function listTasks(filters = {}) {
     params.set('priority', filters.priority)
   }
 
+  if (filters.keyword) {
+    params.set('keyword', filters.keyword)
+  }
+
+  if (filters.page) {
+    params.set('page', String(filters.page))
+  }
+
+  if (filters.size) {
+    params.set('size', String(filters.size))
+  }
+
   const query = params.toString()
 
   return request(query ? `/tasks?${query}` : '/tasks')
