@@ -1,14 +1,15 @@
 package com.qijx.aitodo.task.service;
 
 import java.time.LocalDateTime;
-import java.util.List;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.qijx.aitodo.task.dto.TaskCreateRequest;
+import com.qijx.aitodo.task.dto.TaskPageResponse;
 import com.qijx.aitodo.task.dto.TaskResponse;
 import com.qijx.aitodo.task.dto.TaskStatusUpdateRequest;
 import com.qijx.aitodo.task.dto.TaskUpdateRequest;
@@ -42,16 +43,44 @@ public class TaskService {
         return toResponse(task);
     }
 
-    public List<TaskResponse> listMyTasks(Long userId){
-        List<Task> tasks = taskMapper.selectList(
-            new LambdaQueryWrapper<Task>()
-                    .eq(Task::getUserId, userId)
-                    .orderByDesc(Task::getCreatedAt)
+    public TaskPageResponse listMyTasks(Long userId, String status, String priority, Long page, Long size){
+        if(page == null || page < 1){
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "页码不能小于1");
+        }
+
+        if(size == null || size < 1 || size > 50){
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "每页数量应在1到50之间");
+        }
+        
+        LambdaQueryWrapper<Task> queryWrapper = new LambdaQueryWrapper<Task>()
+                .eq(Task::getUserId, userId)
+                .orderByDesc(Task::getCreatedAt);
+
+        if(status != null && !status.isBlank()){
+            queryWrapper.eq(Task::getStatus, resolveStatus(status));
+        }
+
+        if(priority != null && !priority.isBlank()){
+            queryWrapper.eq(Task::getPriority, resolvePriority(priority));
+        }
+
+        Page<Task> taskPage = taskMapper.selectPage(new Page<>(page, size), queryWrapper);
+
+        TaskPageResponse response = new TaskPageResponse();
+
+        response.setRecords(
+            taskPage.getRecords()
+                    .stream()
+                    .map(this::toResponse)
+                    .toList()  
         );
 
-        return tasks.stream()
-                .map(this::toResponse)
-                .toList();
+        response.setPage(taskPage.getCurrent());
+        response.setSize(taskPage.getSize());
+        response.setTotal(taskPage.getTotal());
+        response.setPages((taskPage.getPages()));
+
+        return response;
     }
 
     public TaskResponse getMyTask(Long userId, Long taskId){
@@ -122,6 +151,20 @@ public class TaskService {
         taskMapper.updateById(task);
 
         return toResponse(task);
+    }
+
+    public void deleteTask(Long userId, Long taskId){
+        Task task = taskMapper.selectOne(
+            new LambdaQueryWrapper<Task>()
+                    .eq(Task::getId, taskId)
+                    .eq(Task::getUserId, userId)   
+        );
+
+        if(task == null){
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在");
+        }
+
+        taskMapper.deleteById(taskId);
     }
 
     private String resolvePriority(String priority){

@@ -2,6 +2,8 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
   CalendarDays,
+  Check,
+  Circle,
   Inbox,
   ListTodo,
   LogOut,
@@ -11,10 +13,21 @@ import {
   Search,
   Sparkles,
   Star,
+  Trash2,
   X,
   UserRound
 } from '@lucide/vue'
-import { createTask, getCurrentUser, getTask, listTasks, loginUser, registerUser, updateTask } from './services/api'
+import {
+  createTask,
+  deleteTask,
+  getCurrentUser,
+  getTask,
+  listTasks,
+  loginUser,
+  registerUser,
+  updateTask,
+  updateTaskStatus
+} from './services/api'
 
 const authMode = ref('login')
 const user = ref(null)
@@ -55,6 +68,11 @@ const editForm = reactive({
   dueTime: ''
 })
 
+const listFilters = reactive({
+  status: '',
+  priority: ''
+})
+
 const editDateParts = computed(() => splitDateParts(editForm.dueDate))
 const editTimeParts = computed(() => splitTimeParts(editForm.dueTime))
 
@@ -62,6 +80,12 @@ const priorityOptions = [
   { value: 'LOW', label: '低', tone: 'priority-LOW' },
   { value: 'MEDIUM', label: '中', tone: 'priority-MEDIUM' },
   { value: 'HIGH', label: '高', tone: 'priority-HIGH' }
+]
+
+const statusOptions = [
+  { value: 'TODO', label: '待办' },
+  { value: 'IN_PROGRESS', label: '进行中' },
+  { value: 'DONE', label: '已完成' }
 ]
 
 const dueButtonLabel = computed(() => {
@@ -75,16 +99,21 @@ const dueButtonLabel = computed(() => {
 })
 
 const views = computed(() => [
-  { key: 'all', label: '全部任务', icon: ListTodo, count: tasks.value.length },
+  { key: 'all', label: '全部任务', icon: ListTodo, count: activeTasks.value.length },
   { key: 'today', label: '我的一天', icon: Sparkles, count: todayTasks.value.length },
   { key: 'planned', label: '计划内', icon: CalendarDays, count: plannedTasks.value.length },
-  { key: 'important', label: '重要', icon: Star, count: importantTasks.value.length }
+  { key: 'important', label: '重要', icon: Star, count: importantTasks.value.length },
+  { key: 'progress', label: '进行中', icon: RefreshCw, count: inProgressTasks.value.length },
+  { key: 'done', label: '已完成', icon: Check, count: doneTasks.value.length }
 ])
 
 const todayKey = computed(() => toLocalDateKey(new Date()))
-const todayTasks = computed(() => tasks.value.filter((task) => formatDateKey(task.dueAt) === todayKey.value))
-const plannedTasks = computed(() => tasks.value.filter((task) => Boolean(task.dueAt)))
-const importantTasks = computed(() => tasks.value.filter((task) => task.priority === 'HIGH'))
+const activeTasks = computed(() => tasks.value.filter((task) => task.status !== 'DONE'))
+const todayTasks = computed(() => activeTasks.value.filter((task) => formatDateKey(task.dueAt) === todayKey.value))
+const plannedTasks = computed(() => activeTasks.value.filter((task) => Boolean(task.dueAt)))
+const importantTasks = computed(() => activeTasks.value.filter((task) => task.priority === 'HIGH'))
+const inProgressTasks = computed(() => tasks.value.filter((task) => task.status === 'IN_PROGRESS'))
+const doneTasks = computed(() => tasks.value.filter((task) => task.status === 'DONE'))
 
 const visibleTasks = computed(() => {
   const source = resolveViewTasks()
@@ -102,9 +131,10 @@ const visibleTasks = computed(() => {
 const currentView = computed(() => views.value.find((item) => item.key === activeView.value) || views.value[0])
 const taskStats = computed(() => {
   return {
-    total: tasks.value.length,
+    total: activeTasks.value.length,
     high: importantTasks.value.length,
-    planned: plannedTasks.value.length
+    planned: plannedTasks.value.length,
+    done: doneTasks.value.length
   }
 })
 
@@ -124,6 +154,7 @@ const isAuthValid = computed(() => {
 })
 
 const isTaskValid = computed(() => taskForm.title.trim().length > 0 && taskForm.title.trim().length <= 100)
+const hasListFilters = computed(() => Boolean(listFilters.status || listFilters.priority))
 
 onMounted(async () => {
   const token = localStorage.getItem('aiTodoToken')
@@ -210,7 +241,6 @@ async function handleCreateTask() {
     taskForm.dueDate = ''
     taskForm.dueTime = ''
     isDuePanelOpen.value = false
-    successMessage.value = '任务已添加。'
   } catch (error) {
     errorMessage.value = error.message || '创建任务失败。'
   } finally {
@@ -219,7 +249,10 @@ async function handleCreateTask() {
 }
 
 async function refreshTasks() {
-  tasks.value = await listTasks()
+  tasks.value = await listTasks({
+    status: listFilters.status,
+    priority: listFilters.priority
+  })
 
   if (selectedTask.value) {
     const latest = tasks.value.find((task) => task.id === selectedTask.value.id)
@@ -255,7 +288,38 @@ function resolveViewTasks() {
     return importantTasks.value
   }
 
-  return tasks.value
+  if (activeView.value === 'progress') {
+    return inProgressTasks.value
+  }
+
+  if (activeView.value === 'done') {
+    return doneTasks.value
+  }
+
+  if (hasListFilters.value) {
+    return tasks.value
+  }
+
+  return activeTasks.value
+}
+
+async function setListStatus(status) {
+  listFilters.status = status
+  activeView.value = 'all'
+  await refreshTasks()
+}
+
+async function setListPriority(priority) {
+  listFilters.priority = priority
+  activeView.value = 'all'
+  await refreshTasks()
+}
+
+async function clearListFilters() {
+  listFilters.status = ''
+  listFilters.priority = ''
+  activeView.value = 'all'
+  await refreshTasks()
 }
 
 function formatDateKey(value) {
@@ -467,7 +531,7 @@ async function handleUpdateTask() {
   try {
     const payload = {
       title: editForm.title.trim(),
-      descriptiion: editForm.description.trim(),
+      description: editForm.description.trim(),
       priority: editForm.priority
     }
 
@@ -479,12 +543,62 @@ async function handleUpdateTask() {
     selectedTask.value = updated
     fillEditForm(updated)
     upsertTask(updated)
-    successMessage.value = '任务已更新。'
   } catch (error) {
     detailError.value = error.message || '更新任务失败。'
   } finally {
     isDetailSaving.value = false
   }
+}
+
+async function handleDeleteTask() {
+  if (!selectedTask.value) {
+    return
+  }
+
+  detailError.value = ''
+
+  try {
+    const taskId = selectedTask.value.id
+    await deleteTask(taskId)
+    tasks.value = tasks.value.filter((task) => task.id !== taskId)
+    closeTaskDetail()
+  } catch (error) {
+    detailError.value = error.message || '删除任务失败。'
+  }
+}
+
+async function handleStatusChange(task, status) {
+  if (!task || task.status === status) {
+    return
+  }
+
+  errorMessage.value = ''
+  detailError.value = ''
+
+  try {
+    const updated = await updateTaskStatus(task.id, { status })
+    upsertTask(updated)
+
+    if (selectedTask.value?.id === updated.id) {
+      selectedTask.value = updated
+      fillEditForm(updated)
+    }
+
+  } catch (error) {
+    const message = error.message || '更新任务状态失败。'
+
+    if (selectedTask.value?.id === task.id) {
+      detailError.value = message
+    } else {
+      errorMessage.value = message
+    }
+  }
+}
+
+function toggleTaskDone(task) {
+  const nextStatus = task.status === 'DONE' ? 'TODO' : 'DONE'
+
+  return handleStatusChange(task, nextStatus)
 }
 
 function fillEditForm(task) {
@@ -518,12 +632,18 @@ function upsertTask(task) {
     return
   }
 
-  tasks.value = tasks.value.map((item) => (item.id === task.id ? task : item))
+  tasks.value = [task, ...tasks.value.filter((item) => item.id !== task.id)]
 }
 
 function closeTaskDetail() {
   selectedTask.value = null
   detailError.value = ''
+}
+
+function statusText(status) {
+  const option = statusOptions.find((item) => item.value === status)
+
+  return option?.label || status || '待办'
 }
 
 function priorityText(priority) {
@@ -665,7 +785,7 @@ function priorityText(priority) {
       <div class="stat-strip">
         <div>
           <span>{{ taskStats.total }}</span>
-          <p>全部</p>
+          <p>未完成</p>
         </div>
         <div>
           <span>{{ taskStats.planned }}</span>
@@ -675,23 +795,70 @@ function priorityText(priority) {
           <span>{{ taskStats.high }}</span>
           <p>高优先级</p>
         </div>
+        <div>
+          <span>{{ taskStats.done }}</span>
+          <p>已完成</p>
+        </div>
+      </div>
+
+      <div class="filter-bar">
+        <div class="filter-card">
+          <span class="filter-title">状态</span>
+          <div class="filter-group">
+            <button type="button" :class="{ active: !listFilters.status }" @click="setListStatus('')">全部</button>
+            <button
+              v-for="option in statusOptions"
+              :key="option.value"
+              type="button"
+              :class="{ active: listFilters.status === option.value }"
+              @click="setListStatus(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="filter-card priority-filter">
+          <span class="filter-title">优先级</span>
+          <div class="filter-group">
+            <button type="button" :class="{ active: !listFilters.priority }" @click="setListPriority('')">全部</button>
+            <button
+              v-for="option in priorityOptions"
+              :key="option.value"
+              type="button"
+              :class="{ active: listFilters.priority === option.value }"
+              @click="setListPriority(option.value)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+
+        <button v-if="hasListFilters" class="filter-clear" type="button" @click="clearListFilters">清除筛选</button>
       </div>
 
       <p v-if="errorMessage" class="notice error">{{ errorMessage }}</p>
-      <p v-if="successMessage" class="notice success">{{ successMessage }}</p>
-
       <div class="task-list">
         <article
           v-for="task in visibleTasks"
           :key="task.id"
           class="task-item"
-          :class="{ selected: selectedTask?.id === task.id }"
+          :class="{ selected: selectedTask?.id === task.id, done: task.status === 'DONE' }"
           @click="openTaskDetail(task)"
         >
-          <div class="task-check" aria-hidden="true"></div>
+          <button
+            class="task-check"
+            type="button"
+            :class="{ done: task.status === 'DONE' }"
+            :aria-label="task.status === 'DONE' ? '恢复任务' : '完成任务'"
+            @click.stop="toggleTaskDone(task)"
+          >
+            <Check v-if="task.status === 'DONE'" :size="14" />
+          </button>
           <div class="task-content">
             <div class="task-title-row">
               <h2>{{ task.title }}</h2>
+              <span v-if="task.status === 'IN_PROGRESS'" class="status-pill progress">进行中</span>
               <span class="priority-pill" :class="`priority-${task.priority || 'MEDIUM'}`">
                 {{ priorityText(task.priority) }}
               </span>
@@ -699,7 +866,7 @@ function priorityText(priority) {
             <p v-if="task.description">{{ task.description }}</p>
             <div class="task-meta">
               <span><CalendarDays :size="15" /> {{ formatDueAt(task.dueAt) }}</span>
-              <span><Inbox :size="15" /> {{ task.status }}</span>
+              <span><Inbox :size="15" /> {{ statusText(task.status) }}</span>
             </div>
           </div>
         </article>
@@ -796,6 +963,24 @@ function priorityText(priority) {
         </label>
 
         <div class="detail-section">
+          <span class="detail-label">状态</span>
+          <div class="status-segment" aria-label="编辑任务状态">
+            <button
+              v-for="option in statusOptions"
+              :key="option.value"
+              type="button"
+              :class="{ active: selectedTask.status === option.value }"
+              @click="handleStatusChange(selectedTask, option.value)"
+            >
+              <Circle v-if="option.value === 'TODO'" :size="15" />
+              <RefreshCw v-else-if="option.value === 'IN_PROGRESS'" :size="15" />
+              <Check v-else :size="15" />
+              <span>{{ option.label }}</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="detail-section">
           <span class="detail-label">优先级</span>
           <div class="priority-segment" aria-label="编辑优先级">
             <button
@@ -889,7 +1074,7 @@ function priorityText(priority) {
           <div class="meta-tile">
             <Inbox :size="17" />
             <span>状态</span>
-            <strong>{{ selectedTask.status }}</strong>
+            <strong>{{ statusText(selectedTask.status) }}</strong>
           </div>
           <div class="meta-tile">
             <CalendarDays :size="17" />
@@ -906,6 +1091,11 @@ function priorityText(priority) {
         <button class="primary-button detail-save" type="submit" :disabled="isDetailSaving || isDetailLoading">
           <Save :size="17" />
           <span>{{ isDetailSaving ? '保存中...' : '保存修改' }}</span>
+        </button>
+
+        <button class="danger-button" type="button" @click="handleDeleteTask">
+          <Trash2 :size="17" />
+          <span>删除任务</span>
         </button>
       </form>
     </aside>

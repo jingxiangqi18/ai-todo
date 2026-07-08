@@ -418,7 +418,7 @@ button {
 
 .stat-strip {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   max-width: 620px;
 }
@@ -446,6 +446,73 @@ button {
 .stat-strip p {
   margin: 4px 0 0;
   color: #66758a;
+}
+
+.filter-bar {
+  display: grid;
+  grid-template-columns: minmax(260px, auto) minmax(220px, auto) 1fr;
+  gap: 10px;
+  align-items: center;
+}
+
+.filter-card {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 48px;
+  padding: 7px 8px 7px 12px;
+  background: rgb(255 255 255 / 88%);
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(15 23 42 / 6%);
+}
+
+.priority-filter {
+  border-color: #d7e4f5;
+  background: rgb(248 251 255 / 92%);
+}
+
+.filter-title {
+  flex: 0 0 auto;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.filter-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.filter-group button,
+.filter-clear {
+  min-height: 32px;
+  padding: 0 10px;
+  color: #526173;
+  background: #f2f6fb;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.filter-group button:hover,
+.filter-clear:hover {
+  background: #e8f1ff;
+}
+
+.filter-group button.active {
+  color: #1d4ed8;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgb(15 23 42 / 9%);
+}
+
+.filter-clear {
+  justify-self: end;
+  color: #991b1b;
+  background: #fef2f2;
 }
 
 .task-composer {
@@ -700,8 +767,37 @@ button {
 }
 
 .task-check {
+  display: grid;
+  place-items: center;
   margin-top: 3px;
+  color: #ffffff;
+  background: #ffffff;
   border-color: #93a4b8;
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.task-check:hover {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgb(37 99 235 / 10%);
+}
+
+.task-check.done {
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.task-item.done {
+  opacity: 0.78;
+}
+
+.task-item.done .task-title-row h2 {
+  color: #66758a;
+  text-decoration: line-through;
+  text-decoration-thickness: 2px;
 }
 
 .task-content {
@@ -713,10 +809,10 @@ button {
   display: flex;
   gap: 12px;
   align-items: flex-start;
-  justify-content: space-between;
 }
 
 .task-title-row h2 {
+  flex: 1;
   margin: 0;
   font-size: 17px;
   line-height: 1.4;
@@ -768,6 +864,19 @@ button {
 .priority-HIGH {
   color: #991b1b;
   background: #fee2e2;
+}
+
+.status-pill {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.status-pill.progress {
+  color: #075985;
+  background: #e0f2fe;
 }
 
 .empty-panel {
@@ -852,6 +961,41 @@ button {
 .detail-label {
   font-size: 14px;
   font-weight: 800;
+}
+
+.status-segment {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 5px;
+  background: #f2f6fb;
+  border: 1px solid #d5dfeb;
+  border-radius: 8px;
+}
+
+.status-segment button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 38px;
+  color: #526173;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.status-segment button:hover {
+  background: #ffffff;
+}
+
+.status-segment button.active {
+  color: #1d4ed8;
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgb(15 23 42 / 9%);
 }
 
 .detail-section small {
@@ -1022,6 +1166,25 @@ button {
   width: 100%;
 }
 
+.danger-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+  width: 100%;
+  color: #991b1b;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.danger-button:hover {
+  background: #fee2e2;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1088,6 +1251,19 @@ button {
   .stat-strip,
   .composer-options {
     grid-template-columns: 1fr;
+  }
+
+  .filter-bar {
+    grid-template-columns: 1fr;
+  }
+
+  .filter-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .filter-clear {
+    justify-self: stretch;
   }
 
   .date-part-grid,

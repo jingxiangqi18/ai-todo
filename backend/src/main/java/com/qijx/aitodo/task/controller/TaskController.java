@@ -3,6 +3,7 @@ package com.qijx.aitodo.task.controller;
 import java.util.List;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -10,10 +11,12 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.qijx.aitodo.task.dto.TaskCreateRequest;
+import com.qijx.aitodo.task.dto.TaskPageResponse;
 import com.qijx.aitodo.task.dto.TaskResponse;
 import com.qijx.aitodo.task.dto.TaskStatusUpdateRequest;
 import com.qijx.aitodo.task.dto.TaskUpdateRequest;
@@ -45,12 +48,16 @@ public class TaskController {
     }
 
     @GetMapping
-    public List<TaskResponse> listMyTasks(
-        @RequestHeader(value = "Authorization", required = false) String authorizationHeader
+    public TaskPageResponse listMyTasks(
+        @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+        @RequestParam(required = false) String status,
+        @RequestParam(required = false) String priority,
+        @RequestParam(defaultValue = "1") Long page,
+        @RequestParam(defaultValue = "10") Long size
     ){
         Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
 
-        return taskService.listMyTasks(userId);
+        return taskService.listMyTasks(userId, status, priority, page, size);
     }
 
     @GetMapping("/{id}")
@@ -83,5 +90,15 @@ public class TaskController {
         Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
 
         return taskService.updateTaskStatus(userId, id, request);
+    }
+
+    @DeleteMapping("/{id}")
+    public void deteleTask(
+        @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+        @PathVariable Long id
+    ){
+        Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
+
+        taskService.deleteTask(userId, id);
     }
 }

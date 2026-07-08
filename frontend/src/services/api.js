@@ -50,8 +50,20 @@ export function getCurrentUser() {
   return request('/users/me')
 }
 
-export function listTasks() {
-  return request('/tasks')
+export function listTasks(filters = {}) {
+  const params = new URLSearchParams()
+
+  if (filters.status) {
+    params.set('status', filters.status)
+  }
+
+  if (filters.priority) {
+    params.set('priority', filters.priority)
+  }
+
+  const query = params.toString()
+
+  return request(query ? `/tasks?${query}` : '/tasks')
 }
 
 export function getTask(id) {
@@ -69,5 +81,18 @@ export function updateTask(id, payload) {
   return request(`/tasks/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(payload)
+  })
+}
+
+export function updateTaskStatus(id, payload) {
+  return request(`/tasks/${id}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function deleteTask(id) {
+  return request(`/tasks/${id}`, {
+    method: 'DELETE'
   })
 }
