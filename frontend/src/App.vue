@@ -6,12 +6,15 @@ import {
   ListTodo,
   LogOut,
   Plus,
+  RefreshCw,
+  Save,
   Search,
   Sparkles,
   Star,
+  X,
   UserRound
 } from '@lucide/vue'
-import { createTask, getCurrentUser, listTasks, loginUser, registerUser } from './services/api'
+import { createTask, getCurrentUser, getTask, listTasks, loginUser, registerUser, updateTask } from './services/api'
 
 const authMode = ref('login')
 const user = ref(null)
@@ -24,6 +27,10 @@ const isBooting = ref(true)
 const isAuthSubmitting = ref(false)
 const isTaskSubmitting = ref(false)
 const isDuePanelOpen = ref(false)
+const selectedTask = ref(null)
+const detailError = ref('')
+const isDetailLoading = ref(false)
+const isDetailSaving = ref(false)
 
 const authForm = reactive({
   account: '',
@@ -39,6 +46,17 @@ const taskForm = reactive({
   dueDate: '',
   dueTime: ''
 })
+
+const editForm = reactive({
+  title: '',
+  description: '',
+  priority: 'MEDIUM',
+  dueDate: '',
+  dueTime: ''
+})
+
+const editDateParts = computed(() => splitDateParts(editForm.dueDate))
+const editTimeParts = computed(() => splitTimeParts(editForm.dueTime))
 
 const priorityOptions = [
   { value: 'LOW', label: '低', tone: 'priority-LOW' },
@@ -202,6 +220,11 @@ async function handleCreateTask() {
 
 async function refreshTasks() {
   tasks.value = await listTasks()
+
+  if (selectedTask.value) {
+    const latest = tasks.value.find((task) => task.id === selectedTask.value.id)
+    selectedTask.value = latest || null
+  }
 }
 
 function switchAuthMode(mode) {
@@ -249,10 +272,63 @@ function toLocalDateKey(date) {
 
 function formatDueAt(value) {
   if (!value) {
-    return '无截止时间'
+    return '未安排'
   }
 
-  return value.replace('T', ' ').slice(0, 16)
+  return formatTaskDateTime(value)
+}
+
+function formatTaskDateTime(value) {
+  const date = parseLocalDateTime(value)
+
+  if (!date) {
+    return '未安排'
+  }
+
+  const datePart = date.toLocaleDateString('zh-CN', {
+    month: 'long',
+    day: 'numeric',
+    weekday: 'short'
+  })
+  const timePart = date.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
+
+  return `${datePart} ${timePart}`
+}
+
+function formatFullDateTime(value) {
+  const date = parseLocalDateTime(value)
+
+  if (!date) {
+    return '暂无记录'
+  }
+
+  const datePart = date.toLocaleDateString('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'short'
+  })
+  const timePart = date.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
+
+  return `${datePart} ${timePart}`
+}
+
+function parseLocalDateTime(value) {
+  if (!value) {
+    return null
+  }
+
+  const date = new Date(String(value))
+
+  return Number.isNaN(date.getTime()) ? null : date
 }
 
 function formatDateLabel(value) {
@@ -302,6 +378,152 @@ function setDueTomorrow() {
 function clearDue() {
   taskForm.dueDate = ''
   taskForm.dueTime = ''
+}
+
+function setEditDueToday() {
+  editForm.dueDate = todayKey.value
+  editForm.dueTime = editForm.dueTime || '18:00'
+}
+
+function setEditDueTomorrow() {
+  const tomorrow = new Date()
+  tomorrow.setDate(tomorrow.getDate() + 1)
+  editForm.dueDate = toLocalDateKey(tomorrow)
+  editForm.dueTime = editForm.dueTime || '18:00'
+}
+
+function updateEditDatePart(part, value) {
+  const current = splitDateParts(editForm.dueDate)
+  const fallback = splitDateParts(todayKey.value)
+  const next = {
+    year: current.year || fallback.year,
+    month: current.month || fallback.month,
+    day: current.day || fallback.day,
+    [part]: value
+  }
+
+  if (!next.year || !next.month || !next.day) {
+    editForm.dueDate = ''
+    return
+  }
+
+  editForm.dueDate = `${String(next.year).padStart(4, '0')}-${String(next.month).padStart(2, '0')}-${String(next.day).padStart(2, '0')}`
+}
+
+function updateEditTimePart(part, value) {
+  const current = splitTimeParts(editForm.dueTime)
+  const next = {
+    hour: current.hour || '18',
+    minute: current.minute || '00',
+    [part]: value
+  }
+
+  editForm.dueTime = `${String(next.hour).padStart(2, '0')}:${String(next.minute).padStart(2, '0')}`
+}
+
+function splitDateParts(value) {
+  const [year = '', month = '', day = ''] = value ? value.split('-') : []
+
+  return { year, month, day }
+}
+
+function splitTimeParts(value) {
+  const [hour = '', minute = ''] = value ? value.split(':') : []
+
+  return { hour, minute }
+}
+
+async function openTaskDetail(task) {
+  selectedTask.value = task
+  detailError.value = ''
+  fillEditForm(task)
+  isDetailLoading.value = true
+
+  try {
+    const latest = await getTask(task.id)
+    selectedTask.value = latest
+    fillEditForm(latest)
+  } catch (error) {
+    detailError.value = error.message || '读取任务详情失败。'
+  } finally {
+    isDetailLoading.value = false
+  }
+}
+
+async function handleUpdateTask() {
+  if (!selectedTask.value) {
+    return
+  }
+
+  detailError.value = ''
+
+  if (!editForm.title.trim()) {
+    detailError.value = '任务标题不能为空。'
+    return
+  }
+
+  isDetailSaving.value = true
+
+  try {
+    const payload = {
+      title: editForm.title.trim(),
+      descriptiion: editForm.description.trim(),
+      priority: editForm.priority
+    }
+
+    if (editForm.dueDate) {
+      payload.dueAt = `${editForm.dueDate}T${editForm.dueTime || '23:59'}`
+    }
+
+    const updated = await updateTask(selectedTask.value.id, payload)
+    selectedTask.value = updated
+    fillEditForm(updated)
+    upsertTask(updated)
+    successMessage.value = '任务已更新。'
+  } catch (error) {
+    detailError.value = error.message || '更新任务失败。'
+  } finally {
+    isDetailSaving.value = false
+  }
+}
+
+function fillEditForm(task) {
+  editForm.title = task?.title || ''
+  editForm.description = task?.description || ''
+  editForm.priority = task?.priority || 'MEDIUM'
+
+  const due = splitDueAt(task?.dueAt)
+  editForm.dueDate = due.date
+  editForm.dueTime = due.time
+}
+
+function splitDueAt(value) {
+  if (!value) {
+    return { date: '', time: '' }
+  }
+
+  const [date, time = ''] = String(value).split('T')
+
+  return {
+    date,
+    time: time.slice(0, 5)
+  }
+}
+
+function upsertTask(task) {
+  const index = tasks.value.findIndex((item) => item.id === task.id)
+
+  if (index === -1) {
+    tasks.value = [task, ...tasks.value]
+    return
+  }
+
+  tasks.value = tasks.value.map((item) => (item.id === task.id ? task : item))
+}
+
+function closeTaskDetail() {
+  selectedTask.value = null
+  detailError.value = ''
 }
 
 function priorityText(priority) {
@@ -393,7 +615,7 @@ function priorityText(priority) {
     </section>
   </main>
 
-  <main v-else class="todo-app">
+  <main v-else class="todo-app" :class="{ 'has-detail': selectedTask }">
     <aside class="sidebar">
       <div class="account-box">
         <div class="avatar">
@@ -455,6 +677,40 @@ function priorityText(priority) {
         </div>
       </div>
 
+      <p v-if="errorMessage" class="notice error">{{ errorMessage }}</p>
+      <p v-if="successMessage" class="notice success">{{ successMessage }}</p>
+
+      <div class="task-list">
+        <article
+          v-for="task in visibleTasks"
+          :key="task.id"
+          class="task-item"
+          :class="{ selected: selectedTask?.id === task.id }"
+          @click="openTaskDetail(task)"
+        >
+          <div class="task-check" aria-hidden="true"></div>
+          <div class="task-content">
+            <div class="task-title-row">
+              <h2>{{ task.title }}</h2>
+              <span class="priority-pill" :class="`priority-${task.priority || 'MEDIUM'}`">
+                {{ priorityText(task.priority) }}
+              </span>
+            </div>
+            <p v-if="task.description">{{ task.description }}</p>
+            <div class="task-meta">
+              <span><CalendarDays :size="15" /> {{ formatDueAt(task.dueAt) }}</span>
+              <span><Inbox :size="15" /> {{ task.status }}</span>
+            </div>
+          </div>
+        </article>
+
+        <section v-if="visibleTasks.length === 0" class="empty-panel">
+          <ListTodo :size="34" />
+          <h2>这里还没有任务</h2>
+          <p>使用底部输入框添加第一条任务。</p>
+        </section>
+      </div>
+
       <form class="task-composer" @submit.prevent="handleCreateTask">
         <div class="composer-main">
           <Plus :size="20" />
@@ -513,34 +769,145 @@ function priorityText(priority) {
           </button>
         </div>
       </form>
+    </section>
 
-      <p v-if="errorMessage" class="notice error">{{ errorMessage }}</p>
-      <p v-if="successMessage" class="notice success">{{ successMessage }}</p>
+    <aside v-if="selectedTask" class="detail-panel">
+      <header class="detail-header">
+        <div>
+          <p>任务详情</p>
+          <h2>{{ selectedTask.title }}</h2>
+        </div>
+        <button type="button" class="icon-button" aria-label="关闭详情" @click="closeTaskDetail">
+          <X :size="18" />
+        </button>
+      </header>
 
-      <div class="task-list">
-        <article v-for="task in visibleTasks" :key="task.id" class="task-item">
-          <div class="task-check" aria-hidden="true"></div>
-          <div class="task-content">
-            <div class="task-title-row">
-              <h2>{{ task.title }}</h2>
-              <span class="priority-pill" :class="`priority-${task.priority || 'MEDIUM'}`">
-                {{ priorityText(task.priority) }}
-              </span>
+      <p v-if="detailError" class="notice error">{{ detailError }}</p>
+
+      <form class="detail-form" @submit.prevent="handleUpdateTask">
+        <label class="field">
+          <span>标题</span>
+          <input v-model="editForm.title" type="text" maxlength="100" />
+        </label>
+
+        <label class="field">
+          <span>描述</span>
+          <input v-model="editForm.description" type="text" maxlength="100" placeholder="补充任务说明" />
+        </label>
+
+        <div class="detail-section">
+          <span class="detail-label">优先级</span>
+          <div class="priority-segment" aria-label="编辑优先级">
+            <button
+              v-for="option in priorityOptions"
+              :key="option.value"
+              type="button"
+              :class="[{ active: editForm.priority === option.value }, option.tone]"
+              @click="editForm.priority = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+        </div>
+
+        <div class="detail-section">
+          <span class="detail-label">截止时间</span>
+          <div class="due-editor">
+            <div class="due-editor-preview">
+              <CalendarDays :size="18" />
+              <div>
+                <strong>{{ formatDateLabel(editForm.dueDate) }}</strong>
+                <span>{{ formatTimeLabel(editForm.dueTime) }}</span>
+              </div>
             </div>
-            <p v-if="task.description">{{ task.description }}</p>
-            <div class="task-meta">
-              <span><CalendarDays :size="15" /> {{ formatDueAt(task.dueAt) }}</span>
-              <span><Inbox :size="15" /> {{ task.status }}</span>
+
+            <div class="due-editor-actions">
+              <button type="button" @click="setEditDueToday">今天傍晚</button>
+              <button type="button" @click="setEditDueTomorrow">明天傍晚</button>
+            </div>
+
+            <div class="date-part-grid" aria-label="编辑截止日期">
+              <label>
+                <span>年</span>
+                <input
+                  :value="editDateParts.year"
+                  inputmode="numeric"
+                  maxlength="4"
+                  placeholder="2026"
+                  @input="updateEditDatePart('year', $event.target.value)"
+                />
+              </label>
+              <label>
+                <span>月</span>
+                <input
+                  :value="editDateParts.month"
+                  inputmode="numeric"
+                  maxlength="2"
+                  placeholder="07"
+                  @input="updateEditDatePart('month', $event.target.value)"
+                />
+              </label>
+              <label>
+                <span>日</span>
+                <input
+                  :value="editDateParts.day"
+                  inputmode="numeric"
+                  maxlength="2"
+                  placeholder="08"
+                  @input="updateEditDatePart('day', $event.target.value)"
+                />
+              </label>
+            </div>
+
+            <div class="time-part-grid" aria-label="编辑截止时间">
+              <label>
+                <span>时</span>
+                <input
+                  :value="editTimeParts.hour"
+                  inputmode="numeric"
+                  maxlength="2"
+                  placeholder="18"
+                  @input="updateEditTimePart('hour', $event.target.value)"
+                />
+              </label>
+              <i>:</i>
+              <label>
+                <span>分</span>
+                <input
+                  :value="editTimeParts.minute"
+                  inputmode="numeric"
+                  maxlength="2"
+                  placeholder="00"
+                  @input="updateEditTimePart('minute', $event.target.value)"
+                />
+              </label>
             </div>
           </div>
-        </article>
+        </div>
 
-        <section v-if="visibleTasks.length === 0" class="empty-panel">
-          <ListTodo :size="34" />
-          <h2>这里还没有任务</h2>
-          <p>使用上方输入框添加第一条任务。</p>
-        </section>
-      </div>
-    </section>
+        <div class="detail-meta">
+          <div class="meta-tile">
+            <Inbox :size="17" />
+            <span>状态</span>
+            <strong>{{ selectedTask.status }}</strong>
+          </div>
+          <div class="meta-tile">
+            <CalendarDays :size="17" />
+            <span>创建</span>
+            <strong>{{ formatFullDateTime(selectedTask.createdAt) }}</strong>
+          </div>
+          <div class="meta-tile">
+            <RefreshCw :size="17" />
+            <span>更新</span>
+            <strong>{{ formatFullDateTime(selectedTask.updatedAt) }}</strong>
+          </div>
+        </div>
+
+        <button class="primary-button detail-save" type="submit" :disabled="isDetailSaving || isDetailLoading">
+          <Save :size="17" />
+          <span>{{ isDetailSaving ? '保存中...' : '保存修改' }}</span>
+        </button>
+      </form>
+    </aside>
   </main>
 </template>

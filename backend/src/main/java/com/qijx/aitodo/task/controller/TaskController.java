@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -14,6 +15,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.qijx.aitodo.task.dto.TaskCreateRequest;
 import com.qijx.aitodo.task.dto.TaskResponse;
+import com.qijx.aitodo.task.dto.TaskStatusUpdateRequest;
+import com.qijx.aitodo.task.dto.TaskUpdateRequest;
 import com.qijx.aitodo.task.service.TaskService;
 import com.qijx.aitodo.user.service.JwtService;
 
@@ -58,5 +61,27 @@ public class TaskController {
         Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
 
         return taskService.getMyTask(userId, id);
+    }
+
+    @PatchMapping("/{id}")
+    public TaskResponse updateTask(
+        @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+        @PathVariable Long id,
+        @Valid @RequestBody TaskUpdateRequest request
+    ){
+        Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
+
+        return taskService.updateTask(userId, id, request);
+    }
+
+    @PatchMapping("/{id}/status")
+    public TaskResponse updateStatus(
+        @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+        @PathVariable Long id,
+        @Valid @RequestBody TaskStatusUpdateRequest request
+    ){
+        Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
+
+        return taskService.updateTaskStatus(userId, id, request);
     }
 }

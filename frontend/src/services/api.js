@@ -54,9 +54,20 @@ export function listTasks() {
   return request('/tasks')
 }
 
+export function getTask(id) {
+  return request(`/tasks/${id}`)
+}
+
 export function createTask(payload) {
   return request('/tasks', {
     method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function updateTask(id, payload) {
+  return request(`/tasks/${id}`, {
+    method: 'PATCH',
     body: JSON.stringify(payload)
   })
 }

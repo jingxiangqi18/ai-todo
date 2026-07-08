@@ -10,6 +10,8 @@ import org.springframework.web.server.ResponseStatusException;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.qijx.aitodo.task.dto.TaskCreateRequest;
 import com.qijx.aitodo.task.dto.TaskResponse;
+import com.qijx.aitodo.task.dto.TaskStatusUpdateRequest;
+import com.qijx.aitodo.task.dto.TaskUpdateRequest;
 import com.qijx.aitodo.task.entity.Task;
 import com.qijx.aitodo.task.mapper.TaskMapper;
 
@@ -66,6 +68,62 @@ public class TaskService {
         return toResponse(task);
     }
 
+    public TaskResponse updateTask(Long userId, Long taskId, TaskUpdateRequest request){
+        Task task = taskMapper.selectOne(
+            new LambdaQueryWrapper<Task>()
+                    .eq(Task::getId, taskId)
+                    .eq(Task::getUserId, userId)
+        );
+
+        if(task == null){
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在");
+        }
+
+        if(request.getTitle() != null){
+            if(request.getTitle().isBlank()){
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "任务标题不得为空");
+            }
+            task.setTitle(request.getTitle());
+        }
+
+        if(request.getDescription() != null){
+            task.setDescription(request.getDescription());
+        }
+
+        if(request.getPriority() != null){
+            task.setPriority(resolvePriority(request.getPriority()));
+        }
+
+        if(request.getDueAt() != null){
+            task.setDueAt(request.getDueAt());
+        }
+
+        task.setUpdatedAt(LocalDateTime.now());
+
+        taskMapper.updateById(task);
+
+        return toResponse(task);
+    }
+
+    public TaskResponse updateTaskStatus(Long userId, Long taskId, TaskStatusUpdateRequest request){
+        Task task = taskMapper.selectOne(
+            new LambdaQueryWrapper<Task>()
+                    .eq(Task::getId, taskId)
+                    .eq(Task::getUserId, userId)
+        );
+
+        if(task == null){
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在");
+        }
+
+        task.setStatus(resolveStatus(request.getStatus()));
+        task.setUpdatedAt(LocalDateTime.now());
+
+        taskMapper.updateById(task);
+
+        return toResponse(task);
+    }
+
     private String resolvePriority(String priority){
         if(priority == null || priority.isBlank()){
             return "MEDIUM";
@@ -76,6 +134,18 @@ public class TaskService {
         }
 
         return priority;
+    }
+
+    private String resolveStatus(String status){
+        if(status == null || status.isBlank()){
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "任务状态不能为空");
+        }
+
+        if(!status.equals("TODO") && !status.equals("IN_PROGRESS") && !status.equals("DONE")){
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "任务状态不正确");
+        }
+
+        return status;
     }
 
     private TaskResponse toResponse(Task task){
