@@ -1,6 +1,10 @@
 package com.qijx.aitodo.task.controller;
 
+import java.util.List;
+
 import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -35,5 +39,24 @@ public class TaskController {
         Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
 
         return taskService.createTask(userId, request);
+    }
+
+    @GetMapping
+    public List<TaskResponse> listMyTasks(
+        @RequestHeader(value = "Authorization", required = false) String authorizationHeader
+    ){
+        Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
+
+        return taskService.listMyTasks(userId);
+    }
+
+    @GetMapping("/{id}")
+    public TaskResponse getMyTask(
+        @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+        @PathVariable Long id
+    ){
+        Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
+
+        return taskService.getMyTask(userId, id);
     }
 }

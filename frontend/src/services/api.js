@@ -1,16 +1,20 @@
 const API_BASE = '/api'
 
 async function request(path, options = {}) {
+  const token = localStorage.getItem('aiTodoToken')
+  const headers = {
+    ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(options.headers || {})
+  }
+
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {})
-    },
+    headers,
     ...options
   })
 
   const contentType = response.headers.get('content-type') || ''
-  const isJson = contentType.includes('application/json')
+  const isJson = contentType.includes('json')
   const data = isJson ? await response.json() : await response.text()
 
   if (!response.ok) {
@@ -30,6 +34,28 @@ function resolveErrorMessage(data, status) {
 
 export function registerUser(payload) {
   return request('/users/register', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function loginUser(payload) {
+  return request('/users/login', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function getCurrentUser() {
+  return request('/users/me')
+}
+
+export function listTasks() {
+  return request('/tasks')
+}
+
+export function createTask(payload) {
+  return request('/tasks', {
     method: 'POST',
     body: JSON.stringify(payload)
   })

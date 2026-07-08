@@ -5,6 +5,10 @@
 ## 当前已对接的后端接口
 
 - `POST /api/users/register`
+- `POST /api/users/login`
+- `GET /api/users/me`
+- `GET /api/tasks`
+- `POST /api/tasks`
 
 请求体：
 
@@ -27,6 +31,8 @@
   "createdAt": "2026-07-06T21:00:00"
 }
 ```
+
+登录成功后，前端会把后端返回的 JWT 保存到 `localStorage.aiTodoToken`，之后访问 `/api/users/me` 和 `/api/tasks` 时通过 `Authorization: Bearer <token>` 传给后端。
 
 ## 启动方式
 

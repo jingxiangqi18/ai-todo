@@ -52,6 +52,20 @@ public class TaskService {
                 .toList();
     }
 
+    public TaskResponse getMyTask(Long userId, Long taskId){
+        Task task = taskMapper.selectOne(
+            new LambdaQueryWrapper<Task>()
+                    .eq(Task::getId, taskId)
+                    .eq(Task::getUserId, userId)
+        );
+
+        if(task == null){
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在");
+        }
+
+        return toResponse(task);
+    }
+
     private String resolvePriority(String priority){
         if(priority == null || priority.isBlank()){
             return "MEDIUM";
@@ -70,6 +84,7 @@ public class TaskService {
         response.setId(task.getId());
         response.setTitle(task.getTitle());
         response.setDescription(task.getDescription());
+        response.setStatus(task.getStatus());
         response.setPriority(task.getPriority());
         response.setDueAt(task.getDueAt());
         response.setCreatedAt(task.getCreatedAt());
