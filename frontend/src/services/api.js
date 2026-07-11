@@ -78,6 +78,16 @@ export function listTasks(filters = {}) {
   return request(query ? `/tasks?${query}` : '/tasks')
 }
 
+export function getTaskStats() {
+  return request('/tasks/stats')
+}
+
+export function getTaskReminders(minutes = 60) {
+  const params = new URLSearchParams({ minutes: String(minutes) })
+
+  return request(`/tasks/reminders?${params.toString()}`)
+}
+
 export function getTask(id) {
   return request(`/tasks/${id}`)
 }

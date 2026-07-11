@@ -18,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 import com.qijx.aitodo.task.dto.TaskCreateRequest;
 import com.qijx.aitodo.task.dto.TaskPageResponse;
 import com.qijx.aitodo.task.dto.TaskResponse;
+import com.qijx.aitodo.task.dto.TaskStatsResponse;
 import com.qijx.aitodo.task.dto.TaskStatusUpdateRequest;
 import com.qijx.aitodo.task.dto.TaskUpdateRequest;
 import com.qijx.aitodo.task.service.TaskService;
@@ -61,6 +62,15 @@ public class TaskController {
         return taskService.listMyTasks(userId, status, priority, keyword, page, size);
     }
 
+    @GetMapping("/stats")
+    public TaskStatsResponse getTaskStats(
+        @RequestHeader(value = "Authorization", required = false) String authorizationHeader
+    ){
+        Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
+
+        return taskService.getTaskStats(userId);
+    }
+
     @GetMapping("/{id}")
     public TaskResponse getMyTask(
         @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
@@ -101,5 +111,15 @@ public class TaskController {
         Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
 
         taskService.deleteTask(userId, id);
+    }
+
+    @GetMapping("/reminders")
+    public List<TaskResponse> listUpcomingReminders(
+        @RequestHeader(value = "Authorization", required = false) String authorizationHeader,
+        @RequestParam(defaultValue = "60") Long minutes
+    ){
+        Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
+
+        return taskService.listUpcomingReminders(userId, minutes);
     }
 }

@@ -1,8 +1,11 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
+  Bell,
   CalendarDays,
   Check,
+  ChevronLeft,
+  ChevronRight,
   Circle,
   Inbox,
   ListTodo,
@@ -11,6 +14,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  SlidersHorizontal,
   Sparkles,
   Star,
   Trash2,
@@ -22,6 +26,8 @@ import {
   deleteTask,
   getCurrentUser,
   getTask,
+  getTaskReminders,
+  getTaskStats,
   listTasks,
   loginUser,
   registerUser,
@@ -40,7 +46,11 @@ const isBooting = ref(true)
 const isAuthSubmitting = ref(false)
 const isTaskSubmitting = ref(false)
 const isDuePanelOpen = ref(false)
+const isComposerOpen = ref(false)
+const isFilterOpen = ref(false)
+const isReminderOpen = ref(false)
 const selectedTask = ref(null)
+const reminders = ref([])
 const detailError = ref('')
 const isDetailLoading = ref(false)
 const isDetailSaving = ref(false)
@@ -80,6 +90,16 @@ const taskPage = reactive({
   pages: 1
 })
 
+const taskStats = reactive({
+  total: 0,
+  todo: 0,
+  inProgress: 0,
+  done: 0,
+  highPriority: 0,
+  dueToday: 0,
+  overdue: 0
+})
+
 const editDateParts = computed(() => splitDateParts(editForm.dueDate))
 const editTimeParts = computed(() => splitTimeParts(editForm.dueTime))
 
@@ -106,12 +126,12 @@ const dueButtonLabel = computed(() => {
 })
 
 const views = computed(() => [
-  { key: 'all', label: '全部任务', icon: ListTodo, count: activeTasks.value.length },
-  { key: 'today', label: '我的一天', icon: Sparkles, count: todayTasks.value.length },
-  { key: 'planned', label: '计划内', icon: CalendarDays, count: plannedTasks.value.length },
-  { key: 'important', label: '重要', icon: Star, count: importantTasks.value.length },
-  { key: 'progress', label: '进行中', icon: RefreshCw, count: inProgressTasks.value.length },
-  { key: 'done', label: '已完成', icon: Check, count: doneTasks.value.length }
+  { key: 'all', label: '全部任务', icon: ListTodo, count: taskStats.total },
+  { key: 'today', label: '我的一天', icon: Sparkles, count: taskStats.dueToday },
+  { key: 'planned', label: '计划内', icon: CalendarDays, count: Math.max(0, taskStats.total - taskStats.done) },
+  { key: 'important', label: '重要', icon: Star, count: taskStats.highPriority },
+  { key: 'progress', label: '进行中', icon: RefreshCw, count: taskStats.inProgress },
+  { key: 'done', label: '已完成', icon: Check, count: taskStats.done }
 ])
 
 const todayKey = computed(() => toLocalDateKey(new Date()))
@@ -128,15 +148,6 @@ const visibleTasks = computed(() => {
 })
 
 const currentView = computed(() => views.value.find((item) => item.key === activeView.value) || views.value[0])
-const taskStats = computed(() => {
-  return {
-    total: activeTasks.value.length,
-    high: importantTasks.value.length,
-    planned: plannedTasks.value.length,
-    done: doneTasks.value.length
-  }
-})
-
 const isLogin = computed(() => authMode.value === 'login')
 const isAuthValid = computed(() => {
   if (isLogin.value) {
@@ -243,6 +254,9 @@ async function handleCreateTask() {
     taskForm.dueDate = ''
     taskForm.dueTime = ''
     isDuePanelOpen.value = false
+    isComposerOpen.value = false
+    await refreshTaskStats()
+    await refreshTaskReminders()
   } catch (error) {
     errorMessage.value = error.message || '创建任务失败。'
   } finally {
@@ -277,6 +291,34 @@ async function refreshTasks() {
     const latest = tasks.value.find((task) => task.id === selectedTask.value.id)
     selectedTask.value = latest || null
   }
+
+  await refreshTaskStats()
+  await refreshTaskReminders()
+}
+
+async function refreshTaskStats() {
+  try {
+    Object.assign(taskStats, await getTaskStats())
+  } catch {
+    Object.assign(taskStats, {
+      total: taskPage.total,
+      todo: activeTasks.value.filter((task) => task.status === 'TODO').length,
+      inProgress: inProgressTasks.value.length,
+      done: doneTasks.value.length,
+      highPriority: importantTasks.value.length,
+      dueToday: todayTasks.value.length,
+      overdue: 0
+    })
+  }
+}
+
+async function refreshTaskReminders() {
+  try {
+    const result = await getTaskReminders(60)
+    reminders.value = Array.isArray(result) ? result : []
+  } catch {
+    reminders.value = []
+  }
 }
 
 function switchAuthMode(mode) {
@@ -289,6 +331,16 @@ function logout() {
   localStorage.removeItem('aiTodoToken')
   user.value = null
   tasks.value = []
+  reminders.value = []
+  Object.assign(taskStats, {
+    total: 0,
+    todo: 0,
+    inProgress: 0,
+    done: 0,
+    highPriority: 0,
+    dueToday: 0,
+    overdue: 0
+  })
   authForm.password = ''
   errorMessage.value = ''
   successMessage.value = ''
@@ -315,11 +367,29 @@ function resolveViewTasks() {
     return doneTasks.value
   }
 
-  if (hasServerQuery.value) {
-    return tasks.value
+  return tasks.value
+}
+
+async function selectView(key) {
+  activeView.value = key
+  taskPage.page = 1
+  query.value = ''
+
+  if (key === 'important') {
+    listFilters.status = ''
+    listFilters.priority = 'HIGH'
+  } else if (key === 'progress') {
+    listFilters.status = 'IN_PROGRESS'
+    listFilters.priority = ''
+  } else if (key === 'done') {
+    listFilters.status = 'DONE'
+    listFilters.priority = ''
+  } else {
+    listFilters.status = ''
+    listFilters.priority = ''
   }
 
-  return activeTasks.value
+  await refreshTasks()
 }
 
 async function setListStatus(status) {
@@ -327,6 +397,7 @@ async function setListStatus(status) {
   activeView.value = 'all'
   taskPage.page = 1
   await refreshTasks()
+  isFilterOpen.value = false
 }
 
 async function setListPriority(priority) {
@@ -334,6 +405,7 @@ async function setListPriority(priority) {
   activeView.value = 'all'
   taskPage.page = 1
   await refreshTasks()
+  isFilterOpen.value = false
 }
 
 async function clearListFilters() {
@@ -343,6 +415,7 @@ async function clearListFilters() {
   activeView.value = 'all'
   taskPage.page = 1
   await refreshTasks()
+  isFilterOpen.value = false
 }
 
 async function applyKeywordSearch() {
@@ -360,8 +433,12 @@ async function changePage(page) {
   await refreshTasks()
 }
 
-function handlePageSizeChange(event) {
-  taskPage.size = Number(event.target.value)
+function changePageSize(size) {
+  if (taskPage.size === size) {
+    return
+  }
+
+  taskPage.size = size
   taskPage.page = 1
   return refreshTasks()
 }
@@ -543,6 +620,7 @@ function splitTimeParts(value) {
 
 async function openTaskDetail(task) {
   selectedTask.value = task
+  isReminderOpen.value = false
   detailError.value = ''
   fillEditForm(task)
   isDetailLoading.value = true
@@ -587,6 +665,8 @@ async function handleUpdateTask() {
     selectedTask.value = updated
     fillEditForm(updated)
     upsertTask(updated)
+    await refreshTaskStats()
+    await refreshTaskReminders()
   } catch (error) {
     detailError.value = error.message || '更新任务失败。'
   } finally {
@@ -606,6 +686,8 @@ async function handleDeleteTask() {
     await deleteTask(taskId)
     tasks.value = tasks.value.filter((task) => task.id !== taskId)
     closeTaskDetail()
+    await refreshTaskStats()
+    await refreshTaskReminders()
   } catch (error) {
     detailError.value = error.message || '删除任务失败。'
   }
@@ -627,6 +709,9 @@ async function handleStatusChange(task, status) {
       selectedTask.value = updated
       fillEditForm(updated)
     }
+
+    await refreshTaskStats()
+    await refreshTaskReminders()
 
   } catch (error) {
     const message = error.message || '更新任务状态失败。'
@@ -682,6 +767,24 @@ function upsertTask(task) {
 function closeTaskDetail() {
   selectedTask.value = null
   detailError.value = ''
+}
+
+function openComposer() {
+  isComposerOpen.value = true
+  isDuePanelOpen.value = false
+  isFilterOpen.value = false
+  isReminderOpen.value = false
+}
+
+function closeComposer() {
+  isComposerOpen.value = false
+  isDuePanelOpen.value = false
+}
+
+function isTaskOverdue(task) {
+  const due = parseLocalDateTime(task?.dueAt)
+
+  return Boolean(due && task.status !== 'DONE' && due.getTime() < Date.now())
 }
 
 function statusText(status) {
@@ -797,7 +900,7 @@ function priorityText(priority) {
           :key="view.key"
           type="button"
           :class="{ active: activeView === view.key }"
-          @click="activeView = view.key"
+          @click="selectView(view.key)"
         >
           <component :is="view.icon" :size="18" />
           <span>{{ view.label }}</span>
@@ -815,71 +918,118 @@ function priorityText(priority) {
 
     <section class="task-board">
       <header class="board-header">
-        <div>
+        <div class="board-title">
           <p class="date-line">{{ new Date().toLocaleDateString('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' }) }}</p>
           <h1>{{ currentView.label }}</h1>
         </div>
 
-        <div class="search-box">
-          <Search :size="18" />
-          <input v-model="query" type="search" placeholder="搜索任务" @keyup.enter="applyKeywordSearch" />
-          <button type="button" @click="applyKeywordSearch">搜索</button>
+        <div class="board-actions">
+          <div class="search-box search-box-compact">
+            <Search :size="17" />
+            <input v-model="query" type="search" placeholder="搜索任务" @keyup.enter="applyKeywordSearch" />
+            <button type="button" aria-label="搜索任务" @click="applyKeywordSearch">搜索</button>
+          </div>
+
+          <div class="reminder-menu">
+            <button
+              class="icon-tool"
+              type="button"
+              aria-label="查看即将到期任务"
+              title="未来 60 分钟"
+              @click="isReminderOpen = !isReminderOpen; isFilterOpen = false"
+            >
+              <Bell :size="17" />
+              <b v-if="reminders.length">{{ reminders.length }}</b>
+            </button>
+
+            <div v-if="isReminderOpen" class="reminder-popover">
+              <div class="reminder-heading">
+                <div>
+                  <span>即将到期</span>
+                  <strong>未来 60 分钟</strong>
+                </div>
+                <Bell :size="17" />
+              </div>
+
+              <button
+                v-for="reminder in reminders"
+                :key="reminder.id"
+                class="reminder-item"
+                type="button"
+                @click="openTaskDetail(reminder)"
+              >
+                <span>{{ reminder.title }}</span>
+                <time>{{ formatDueAt(reminder.dueAt) }}</time>
+              </button>
+
+              <p v-if="!reminders.length" class="reminder-empty">这段时间很从容，没有临近截止的任务。</p>
+            </div>
+          </div>
+
+          <div class="filter-menu">
+            <button
+              class="tool-button"
+              type="button"
+              :class="{ active: isFilterOpen }"
+              @click="isFilterOpen = !isFilterOpen; isReminderOpen = false"
+            >
+              <SlidersHorizontal :size="17" />
+              <span>筛选</span>
+              <b v-if="hasListFilters">{{ Number(Boolean(listFilters.status)) + Number(Boolean(listFilters.priority)) }}</b>
+            </button>
+
+            <div v-if="isFilterOpen" class="filter-popover">
+              <div class="filter-popover-heading">
+                <strong>筛选任务</strong>
+                <button v-if="hasServerQuery" type="button" @click="clearListFilters">清除</button>
+              </div>
+
+              <div class="filter-section">
+                <span>状态</span>
+                <div class="filter-group">
+                  <button type="button" :class="{ active: !listFilters.status }" @click="setListStatus('')">全部</button>
+                  <button
+                    v-for="option in statusOptions"
+                    :key="option.value"
+                    type="button"
+                    :class="{ active: listFilters.status === option.value }"
+                    @click="setListStatus(option.value)"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="filter-section priority-filter-section">
+                <span>优先级</span>
+                <div class="filter-group">
+                  <button type="button" :class="{ active: !listFilters.priority }" @click="setListPriority('')">全部</button>
+                  <button
+                    v-for="option in priorityOptions"
+                    :key="option.value"
+                    type="button"
+                    :class="{ active: listFilters.priority === option.value }"
+                    @click="setListPriority(option.value)"
+                  >
+                    {{ option.label }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <button class="primary-button create-trigger" type="button" @click="openComposer">
+            <Plus :size="17" />
+            <span>新建任务</span>
+          </button>
         </div>
       </header>
 
-      <div class="stat-strip">
-        <div>
-          <span>{{ taskStats.total }}</span>
-          <p>未完成</p>
-        </div>
-        <div>
-          <span>{{ taskStats.planned }}</span>
-          <p>有计划</p>
-        </div>
-        <div>
-          <span>{{ taskStats.high }}</span>
-          <p>高优先级</p>
-        </div>
-        <div>
-          <span>{{ taskStats.done }}</span>
-          <p>已完成</p>
-        </div>
-      </div>
-
-      <div class="filter-bar">
-        <div class="filter-card">
-          <span class="filter-title">状态</span>
-          <div class="filter-group">
-            <button type="button" :class="{ active: !listFilters.status }" @click="setListStatus('')">全部</button>
-            <button
-              v-for="option in statusOptions"
-              :key="option.value"
-              type="button"
-              :class="{ active: listFilters.status === option.value }"
-              @click="setListStatus(option.value)"
-            >
-              {{ option.label }}
-            </button>
-          </div>
-        </div>
-
-        <div class="filter-card priority-filter">
-          <span class="filter-title">优先级</span>
-          <div class="filter-group">
-            <button type="button" :class="{ active: !listFilters.priority }" @click="setListPriority('')">全部</button>
-            <button
-              v-for="option in priorityOptions"
-              :key="option.value"
-              type="button"
-              :class="{ active: listFilters.priority === option.value }"
-              @click="setListPriority(option.value)"
-            >
-              {{ option.label }}
-            </button>
-          </div>
-        </div>
-
-        <button v-if="hasServerQuery" class="filter-clear" type="button" @click="clearListFilters">清除筛选</button>
+      <div class="board-summary" aria-label="任务概览">
+        <span><b>{{ taskStats.total }}</b> 全部</span>
+        <span><b>{{ taskStats.todo }}</b> 待办</span>
+        <span><b>{{ taskStats.dueToday }}</b> 今天截止</span>
+        <span v-if="taskStats.overdue" class="summary-overdue"><b>{{ taskStats.overdue }}</b> 已逾期</span>
       </div>
 
       <p v-if="errorMessage" class="notice error">{{ errorMessage }}</p>
@@ -903,15 +1053,10 @@ function priorityText(priority) {
           <div class="task-content">
             <div class="task-title-row">
               <h2>{{ task.title }}</h2>
-              <span v-if="task.status === 'IN_PROGRESS'" class="status-pill progress">进行中</span>
-              <span class="priority-pill" :class="`priority-${task.priority || 'MEDIUM'}`">
-                {{ priorityText(task.priority) }}
+              <span class="task-due" :class="{ overdue: isTaskOverdue(task) }">
+                <CalendarDays :size="14" />
+                {{ formatDueAt(task.dueAt) }}
               </span>
-            </div>
-            <p v-if="task.description">{{ task.description }}</p>
-            <div class="task-meta">
-              <span><CalendarDays :size="15" /> {{ formatDueAt(task.dueAt) }}</span>
-              <span><Inbox :size="15" /> {{ statusText(task.status) }}</span>
             </div>
           </div>
         </article>
@@ -919,85 +1064,111 @@ function priorityText(priority) {
         <section v-if="visibleTasks.length === 0" class="empty-panel">
           <ListTodo :size="34" />
           <h2>这里还没有任务</h2>
-          <p>使用底部输入框添加第一条任务。</p>
+          <p>使用右上角的新建任务开始规划。</p>
         </section>
       </div>
 
       <div class="pagination-bar">
         <div class="page-info">
           <span>共 {{ taskPage.total }} 条</span>
-          <strong>第 {{ taskPage.page }} / {{ taskPage.pages || 1 }} 页</strong>
+          <strong>{{ taskPage.page }} / {{ taskPage.pages || 1 }}</strong>
         </div>
 
         <div class="page-actions">
-          <button type="button" :disabled="taskPage.page <= 1" @click="changePage(taskPage.page - 1)">上一页</button>
-          <button type="button" :disabled="taskPage.page >= taskPage.pages" @click="changePage(taskPage.page + 1)">下一页</button>
-          <select :value="taskPage.size" aria-label="每页数量" @change="handlePageSizeChange">
-            <option :value="10">10 条/页</option>
-            <option :value="20">20 条/页</option>
-            <option :value="50">50 条/页</option>
-          </select>
+          <button class="page-arrow" type="button" :disabled="taskPage.page <= 1" @click="changePage(taskPage.page - 1)">
+            <ChevronLeft :size="17" />
+            <span>上一页</span>
+          </button>
+          <button class="page-arrow" type="button" :disabled="taskPage.page >= taskPage.pages" @click="changePage(taskPage.page + 1)">
+            <span>下一页</span>
+            <ChevronRight :size="17" />
+          </button>
+        </div>
+
+        <div class="page-size-segment" aria-label="每页数量">
+          <button
+            v-for="size in [10, 20, 50]"
+            :key="size"
+            type="button"
+            :class="{ active: taskPage.size === size }"
+            @click="changePageSize(size)"
+          >
+            {{ size }}
+          </button>
+          <span>条/页</span>
         </div>
       </div>
 
-      <form class="task-composer" @submit.prevent="handleCreateTask">
-        <div class="composer-main">
-          <Plus :size="20" />
-          <input v-model="taskForm.title" type="text" maxlength="100" placeholder="添加任务" />
-        </div>
-
-        <div class="composer-options">
-          <input v-model="taskForm.description" type="text" maxlength="100" placeholder="描述，最多 100 个字符" />
-          <div class="priority-segment" aria-label="优先级">
-            <button
-              v-for="option in priorityOptions"
-              :key="option.value"
-              type="button"
-              :class="[{ active: taskForm.priority === option.value }, option.tone]"
-              @click="taskForm.priority = option.value"
-            >
-              {{ option.label }}
-            </button>
-          </div>
-          <div class="due-menu" :class="{ open: isDuePanelOpen }">
-            <button class="due-button" type="button" @click="isDuePanelOpen = !isDuePanelOpen">
-              <CalendarDays :size="17" />
-              <span>{{ dueButtonLabel }}</span>
-            </button>
-
-            <div v-if="isDuePanelOpen" class="due-popover">
-              <div class="due-popover-header">
-                <strong>截止时间</strong>
-                <button type="button" @click="clearDue">清除</button>
-              </div>
-
-              <div class="due-presets">
-                <button type="button" @click="setDueToday">今天</button>
-                <button type="button" @click="setDueTomorrow">明天</button>
-              </div>
-
-              <label class="due-field">
-                <span>日期</span>
-                <input v-model="taskForm.dueDate" type="date" />
-              </label>
-
-              <label class="due-field">
-                <span>时间</span>
-                <input v-model="taskForm.dueTime" type="time" />
-              </label>
-
-              <div class="due-summary">
-                {{ formatDateLabel(taskForm.dueDate) }} · {{ formatTimeLabel(taskForm.dueTime) }}
-              </div>
-
-              <button class="due-done" type="button" @click="isDuePanelOpen = false">完成</button>
+      <div v-if="isComposerOpen" class="composer-overlay" @click.self="closeComposer">
+        <form class="task-composer" @submit.prevent="handleCreateTask">
+          <div class="composer-heading">
+            <div>
+              <p>新建任务</p>
+              <span>把要做的事写下来，细节可以稍后补充。</span>
             </div>
+            <button type="button" class="icon-button" aria-label="关闭新建任务" @click="closeComposer">
+              <X :size="18" />
+            </button>
           </div>
-          <button class="primary-button compact" type="submit" :disabled="isTaskSubmitting || !isTaskValid">
-            {{ isTaskSubmitting ? '添加中...' : '添加' }}
-          </button>
-        </div>
-      </form>
+
+          <div class="composer-main">
+            <Plus :size="20" />
+            <input v-model="taskForm.title" type="text" maxlength="100" placeholder="任务标题" autofocus />
+          </div>
+
+          <div class="composer-options">
+            <input v-model="taskForm.description" type="text" maxlength="100" placeholder="描述，最多 100 个字符" />
+            <div class="priority-segment" aria-label="优先级">
+              <button
+                v-for="option in priorityOptions"
+                :key="option.value"
+                type="button"
+                :class="[{ active: taskForm.priority === option.value }, option.tone]"
+                @click="taskForm.priority = option.value"
+              >
+                {{ option.label }}
+              </button>
+            </div>
+            <div class="due-menu" :class="{ open: isDuePanelOpen }">
+              <button class="due-button" type="button" @click="isDuePanelOpen = !isDuePanelOpen">
+                <CalendarDays :size="17" />
+                <span>{{ dueButtonLabel }}</span>
+              </button>
+
+              <div v-if="isDuePanelOpen" class="due-popover">
+                <div class="due-popover-header">
+                  <strong>截止时间</strong>
+                  <button type="button" @click="clearDue">清除</button>
+                </div>
+
+                <div class="due-presets">
+                  <button type="button" @click="setDueToday">今天</button>
+                  <button type="button" @click="setDueTomorrow">明天</button>
+                </div>
+
+                <label class="due-field">
+                  <span>日期</span>
+                  <input v-model="taskForm.dueDate" type="date" />
+                </label>
+
+                <label class="due-field">
+                  <span>时间</span>
+                  <input v-model="taskForm.dueTime" type="time" />
+                </label>
+
+                <div class="due-summary">
+                  {{ formatDateLabel(taskForm.dueDate) }} · {{ formatTimeLabel(taskForm.dueTime) }}
+                </div>
+
+                <button class="due-done" type="button" @click="isDuePanelOpen = false">完成</button>
+              </div>
+            </div>
+            <button class="primary-button compact" type="submit" :disabled="isTaskSubmitting || !isTaskValid">
+              {{ isTaskSubmitting ? '创建中...' : '创建任务' }}
+            </button>
+          </div>
+        </form>
+      </div>
     </section>
 
     <aside v-if="selectedTask" class="detail-panel">

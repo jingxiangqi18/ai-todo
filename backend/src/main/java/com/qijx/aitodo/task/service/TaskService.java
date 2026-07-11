@@ -1,6 +1,7 @@
 package com.qijx.aitodo.task.service;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -11,6 +12,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.qijx.aitodo.task.dto.TaskCreateRequest;
 import com.qijx.aitodo.task.dto.TaskPageResponse;
 import com.qijx.aitodo.task.dto.TaskResponse;
+import com.qijx.aitodo.task.dto.TaskStatsResponse;
 import com.qijx.aitodo.task.dto.TaskStatusUpdateRequest;
 import com.qijx.aitodo.task.dto.TaskUpdateRequest;
 import com.qijx.aitodo.task.entity.Task;
@@ -177,6 +179,46 @@ public class TaskService {
         taskMapper.deleteById(taskId);
     }
 
+    public TaskStatsResponse getTaskStats(Long userId){
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime todayStart = now.toLocalDate().atStartOfDay();
+        LocalDateTime tomorrowStart = todayStart.plusDays(1);
+
+        TaskStatsResponse response = new TaskStatsResponse();
+
+        response.setTotal(countByUserId(userId));
+        response.setTodo(countByStatus(userId, "TODO"));
+        response.setInProgress(countByStatus(userId, "IN_PROGRESS"));
+        response.setDone(countByStatus(userId, "DONE"));
+        response.setHighPriority(countByPriority(userId, "HIGH"));
+        response.setDueToday(countDueToday(userId, todayStart, tomorrowStart));
+        response.setOverdue(countOverdue(userId, now));
+
+        return response;
+    }
+
+    public List<TaskResponse> listUpcomingReminders(Long userId, Long minutes){
+        if(minutes == null || minutes < 1 || minutes > 1440){
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "提醒时间范围应在1-1440分钟之间");
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime deadline = now.plusMinutes(minutes);
+
+        List<Task> tasks = taskMapper.selectList(
+            new LambdaQueryWrapper<Task>()
+                    .eq(Task::getUserId, userId)
+                    .ne(Task::getStatus, "DONE")
+                    .ge(Task::getDueAt, now)
+                    .lt(Task::getDueAt, deadline)
+                    .orderByAsc(Task::getDueAt)
+        );
+
+        return tasks.stream()
+                .map(this::toResponse)
+                .toList();
+    }
+
     private String resolvePriority(String priority){
         if(priority == null || priority.isBlank()){
             return "MEDIUM";
@@ -214,5 +256,46 @@ public class TaskService {
         response.setUpdatedAt(task.getUpdatedAt());
 
         return response;
+    }
+
+    private long countByUserId(Long userId){
+        return taskMapper.selectCount(
+            new LambdaQueryWrapper<Task>()
+                    .eq(Task::getUserId, userId)
+        );
+    }
+
+    private long countByStatus(Long userId, String status){
+        return taskMapper.selectCount(
+            new LambdaQueryWrapper<Task>()
+                    .eq(Task::getUserId, userId)
+                    .eq(Task::getStatus, status)
+        );
+    }
+
+    private long countByPriority(Long userId, String priority){
+        return taskMapper.selectCount(
+            new LambdaQueryWrapper<Task>()
+                    .eq(Task::getUserId, userId)
+                    .eq(Task::getPriority, priority)
+        );
+    }
+
+    private long countDueToday(Long userId, LocalDateTime todayStart, LocalDateTime tomorrowStart){
+        return taskMapper.selectCount(
+            new LambdaQueryWrapper<Task>()
+                    .eq(Task::getUserId, userId)
+                    .ge(Task::getDueAt, todayStart)
+                    .lt(Task::getDueAt, tomorrowStart)
+        );
+    }
+
+    private long countOverdue(Long userId, LocalDateTime now){
+        return taskMapper.selectCount(
+            new LambdaQueryWrapper<Task>()
+                    .eq(Task::getUserId, userId)
+                    .ne(Task::getStatus, "DONE")
+                    .lt(Task::getDueAt, now)
+        );
     }
 }
