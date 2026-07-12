@@ -8,14 +8,29 @@ async function request(path, options = {}) {
     ...(options.headers || {})
   }
 
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers,
-    ...options
-  })
+  let response
+
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      headers,
+      ...options
+    })
+  } catch {
+    throw new Error('无法连接服务器，请检查网络后重试。')
+  }
 
   const contentType = response.headers.get('content-type') || ''
   const isJson = contentType.includes('json')
-  const data = isJson ? await response.json() : await response.text()
+  const responseText = await response.text()
+  let data = responseText
+
+  if (isJson && responseText) {
+    try {
+      data = JSON.parse(responseText)
+    } catch {
+      data = responseText
+    }
+  }
 
   if (!response.ok) {
     throw new Error(resolveErrorMessage(data, response.status))
@@ -26,10 +41,115 @@ async function request(path, options = {}) {
 
 function resolveErrorMessage(data, status) {
   if (data && typeof data === 'object') {
-    return data.message || data.error || data.detail || `请求失败，状态码：${status}`
+    const validationMessage = resolveValidationMessage(data.errors)
+
+    if (validationMessage) {
+      return validationMessage
+    }
+
+    const candidates = [data.detail, data.reason, data.message, data.error]
+
+    for (const candidate of candidates) {
+      const message = normalizeErrorMessage(candidate)
+
+      if (message && !isGenericHttpMessage(message, status)) {
+        return message
+      }
+    }
   }
 
-  return data || `请求失败，状态码：${status}`
+  const textMessage = normalizeErrorMessage(data)
+
+  if (textMessage && !isGenericHttpMessage(textMessage, status)) {
+    return textMessage
+  }
+
+  return fallbackStatusMessage(status)
+}
+
+function resolveValidationMessage(errors) {
+  if (!Array.isArray(errors)) {
+    return ''
+  }
+
+  const messages = errors
+    .map((error) => {
+      if (typeof error === 'string') {
+        return normalizeErrorMessage(error)
+      }
+
+      return normalizeErrorMessage(error?.defaultMessage || error?.message || error?.reason)
+    })
+    .filter(Boolean)
+
+  return [...new Set(messages)].join('；')
+}
+
+function normalizeErrorMessage(value) {
+  if (typeof value !== 'string') {
+    return ''
+  }
+
+  const message = value.trim()
+
+  if (!message) {
+    return ''
+  }
+
+  const quotedReason = message.match(/["“]([^"”]+)["”]\s*$/)
+
+  return quotedReason?.[1]?.trim() || message
+}
+
+function isGenericHttpMessage(message, status) {
+  const normalized = message.trim().toLowerCase().replaceAll('_', ' ')
+  const genericMessages = new Set([
+    String(status),
+    `${status}`,
+    'bad request',
+    'unauthorized',
+    'forbidden',
+    'not found',
+    'method not allowed',
+    'too many requests',
+    'internal server error',
+    'service unavailable',
+    'request failed',
+    'invalid request content.',
+    'validation failed'
+  ])
+
+  return genericMessages.has(normalized) || normalized === `${status} ${fallbackEnglishStatus(status)}`
+}
+
+function fallbackEnglishStatus(status) {
+  const messages = {
+    400: 'bad request',
+    401: 'unauthorized',
+    403: 'forbidden',
+    404: 'not found',
+    405: 'method not allowed',
+    429: 'too many requests',
+    500: 'internal server error',
+    503: 'service unavailable'
+  }
+
+  return messages[status] || ''
+}
+
+function fallbackStatusMessage(status) {
+  const messages = {
+    400: '提交的信息有误，请检查后重试。',
+    401: '登录状态已失效，请重新登录。',
+    403: '当前账号无权执行此操作。',
+    404: '请求的内容不存在或已被删除。',
+    405: '当前操作暂不受支持。',
+    429: '操作过于频繁，请稍后再试。',
+    500: '服务器处理失败，请稍后重试。',
+    503: '服务暂时不可用，请稍后重试。'
+  }
+
+  return messages[status] || `请求失败，状态码：${status}`
 }
 
 export function registerUser(payload) {

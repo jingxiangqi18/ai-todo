@@ -1,15 +1,18 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   Bell,
   CalendarDays,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Circle,
-  Inbox,
+  Flag,
+  History,
   ListTodo,
   LogOut,
+  Menu,
   Plus,
   RefreshCw,
   Save,
@@ -45,15 +48,22 @@ const successMessage = ref('')
 const isBooting = ref(true)
 const isAuthSubmitting = ref(false)
 const isTaskSubmitting = ref(false)
+const isTaskListLoading = ref(false)
 const isDuePanelOpen = ref(false)
 const isComposerOpen = ref(false)
 const isFilterOpen = ref(false)
 const isReminderOpen = ref(false)
+const isSidebarOpen = ref(false)
 const selectedTask = ref(null)
+const expandedDetailSection = ref(null)
 const reminders = ref([])
 const detailError = ref('')
 const isDetailLoading = ref(false)
 const isDetailSaving = ref(false)
+const filterMenuRef = ref(null)
+const reminderMenuRef = ref(null)
+const dueMenuRef = ref(null)
+let searchTimer
 
 const authForm = reactive({
   account: '',
@@ -166,8 +176,45 @@ const isAuthValid = computed(() => {
 const isTaskValid = computed(() => taskForm.title.trim().length > 0 && taskForm.title.trim().length <= 100)
 const hasListFilters = computed(() => Boolean(listFilters.status || listFilters.priority))
 const hasServerQuery = computed(() => Boolean(listFilters.status || listFilters.priority || query.value.trim()))
+const emptyState = computed(() => {
+  if (query.value.trim()) {
+    return {
+      title: '没有找到匹配任务',
+      description: `没有与“${query.value.trim()}”相关的结果。`,
+      action: '清除搜索'
+    }
+  }
+
+  if (hasListFilters.value) {
+    return {
+      title: '当前筛选下没有任务',
+      description: '调整状态或优先级筛选后再看看。',
+      action: '清除筛选'
+    }
+  }
+
+  return {
+    title: `${currentView.value.label}还没有内容`,
+    description: '创建一个任务，把下一步安排清楚。',
+    action: '创建第一个任务'
+  }
+})
+
+watch(query, () => {
+  window.clearTimeout(searchTimer)
+
+  if (!user.value) {
+    return
+  }
+
+  searchTimer = window.setTimeout(() => {
+    applyKeywordSearch()
+  }, 320)
+})
 
 onMounted(async () => {
+  document.addEventListener('pointerdown', handleDocumentPointerDown)
+
   const token = localStorage.getItem('aiTodoToken')
 
   if (!token) {
@@ -185,6 +232,27 @@ onMounted(async () => {
     isBooting.value = false
   }
 })
+
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', handleDocumentPointerDown)
+  window.clearTimeout(searchTimer)
+})
+
+function handleDocumentPointerDown(event) {
+  const path = event.composedPath()
+
+  if (isFilterOpen.value && filterMenuRef.value && !path.includes(filterMenuRef.value)) {
+    isFilterOpen.value = false
+  }
+
+  if (isReminderOpen.value && reminderMenuRef.value && !path.includes(reminderMenuRef.value)) {
+    isReminderOpen.value = false
+  }
+
+  if (isDuePanelOpen.value && dueMenuRef.value && !path.includes(dueMenuRef.value)) {
+    isDuePanelOpen.value = false
+  }
+}
 
 async function handleAuthSubmit() {
   errorMessage.value = ''
@@ -265,35 +333,44 @@ async function handleCreateTask() {
 }
 
 async function refreshTasks() {
-  const result = await listTasks({
-    status: listFilters.status,
-    priority: listFilters.priority,
-    keyword: query.value.trim(),
-    page: taskPage.page,
-    size: taskPage.size
-  })
+  isTaskListLoading.value = true
+  errorMessage.value = ''
 
-  if (Array.isArray(result)) {
-    tasks.value = result
-    taskPage.page = 1
-    taskPage.size = result.length || 10
-    taskPage.total = result.length
-    taskPage.pages = 1
-  } else {
-    tasks.value = result.records || []
-    taskPage.page = result.page || 1
-    taskPage.size = result.size || taskPage.size
-    taskPage.total = result.total || 0
-    taskPage.pages = result.pages || 1
+  try {
+    const result = await listTasks({
+      status: listFilters.status,
+      priority: listFilters.priority,
+      keyword: query.value.trim(),
+      page: taskPage.page,
+      size: taskPage.size
+    })
+
+    if (Array.isArray(result)) {
+      tasks.value = result
+      taskPage.page = 1
+      taskPage.size = result.length || 10
+      taskPage.total = result.length
+      taskPage.pages = 1
+    } else {
+      tasks.value = result.records || []
+      taskPage.page = result.page || 1
+      taskPage.size = result.size || taskPage.size
+      taskPage.total = result.total || 0
+      taskPage.pages = result.pages || 1
+    }
+
+    if (selectedTask.value) {
+      const latest = tasks.value.find((task) => task.id === selectedTask.value.id)
+      selectedTask.value = latest || null
+    }
+
+    await refreshTaskStats()
+    await refreshTaskReminders()
+  } catch (error) {
+    errorMessage.value = error.message || '任务加载失败，请稍后重试。'
+  } finally {
+    isTaskListLoading.value = false
   }
-
-  if (selectedTask.value) {
-    const latest = tasks.value.find((task) => task.id === selectedTask.value.id)
-    selectedTask.value = latest || null
-  }
-
-  await refreshTaskStats()
-  await refreshTaskReminders()
 }
 
 async function refreshTaskStats() {
@@ -372,6 +449,7 @@ function resolveViewTasks() {
 
 async function selectView(key) {
   activeView.value = key
+  isSidebarOpen.value = false
   taskPage.page = 1
   query.value = ''
 
@@ -422,6 +500,24 @@ async function applyKeywordSearch() {
   activeView.value = 'all'
   taskPage.page = 1
   await refreshTasks()
+}
+
+function clearSearch() {
+  query.value = ''
+}
+
+function handleEmptyAction() {
+  if (query.value.trim()) {
+    clearSearch()
+    return
+  }
+
+  if (hasListFilters.value) {
+    clearListFilters()
+    return
+  }
+
+  openComposer()
 }
 
 async function changePage(page) {
@@ -620,6 +716,7 @@ function splitTimeParts(value) {
 
 async function openTaskDetail(task) {
   selectedTask.value = task
+  expandedDetailSection.value = null
   isReminderOpen.value = false
   detailError.value = ''
   fillEditForm(task)
@@ -676,6 +773,10 @@ async function handleUpdateTask() {
 
 async function handleDeleteTask() {
   if (!selectedTask.value) {
+    return
+  }
+
+  if (!window.confirm(`确定删除“${selectedTask.value.title}”吗？此操作无法撤销。`)) {
     return
   }
 
@@ -766,7 +867,22 @@ function upsertTask(task) {
 
 function closeTaskDetail() {
   selectedTask.value = null
+  expandedDetailSection.value = null
   detailError.value = ''
+}
+
+function toggleDetailSection(section) {
+  expandedDetailSection.value = expandedDetailSection.value === section ? null : section
+}
+
+async function selectDetailStatus(status) {
+  await handleStatusChange(selectedTask.value, status)
+  expandedDetailSection.value = null
+}
+
+function selectDetailPriority(priority) {
+  editForm.priority = priority
+  expandedDetailSection.value = null
 }
 
 function openComposer() {
@@ -812,8 +928,15 @@ function priorityText(priority) {
   <main v-else-if="!user" class="auth-shell">
     <section class="auth-card">
       <div class="auth-visual">
-        <p class="brand">AI Todo</p>
-        <h1>清晰整理今天要做的事</h1>
+        <div class="brand-lockup">
+          <span>AT</span>
+          <p class="brand">AI Todo</p>
+        </div>
+        <div class="auth-visual-copy">
+          <p>PERSONAL FOCUS SYSTEM</p>
+          <h1>让今天的重点<br />清晰可见</h1>
+          <span>安静地收拢任务，把注意力留给真正重要的事。</span>
+        </div>
         <div class="preview-list">
           <div class="preview-item strong">
             <span></span>
@@ -883,7 +1006,23 @@ function priorityText(priority) {
   </main>
 
   <main v-else class="todo-app" :class="{ 'has-detail': selectedTask }">
-    <aside class="sidebar">
+    <button
+      v-if="isSidebarOpen"
+      class="sidebar-backdrop"
+      type="button"
+      aria-label="关闭导航"
+      @click="isSidebarOpen = false"
+    ></button>
+
+    <aside class="sidebar" :class="{ open: isSidebarOpen }">
+      <div class="sidebar-brand">
+        <span>AT</span>
+        <strong>AI Todo</strong>
+        <button class="mobile-sidebar-close" type="button" aria-label="关闭导航" @click="isSidebarOpen = false">
+          <X :size="18" />
+        </button>
+      </div>
+
       <div class="account-box">
         <div class="avatar">
           <UserRound :size="20" />
@@ -900,6 +1039,7 @@ function priorityText(priority) {
           :key="view.key"
           type="button"
           :class="{ active: activeView === view.key }"
+          :aria-current="activeView === view.key ? 'page' : undefined"
           @click="selectView(view.key)"
         >
           <component :is="view.icon" :size="18" />
@@ -919,6 +1059,9 @@ function priorityText(priority) {
     <section class="task-board">
       <header class="board-header">
         <div class="board-title">
+          <button class="mobile-menu-button" type="button" aria-label="打开导航" @click="isSidebarOpen = true">
+            <Menu :size="20" />
+          </button>
           <p class="date-line">{{ new Date().toLocaleDateString('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' }) }}</p>
           <h1>{{ currentView.label }}</h1>
         </div>
@@ -926,11 +1069,13 @@ function priorityText(priority) {
         <div class="board-actions">
           <div class="search-box search-box-compact">
             <Search :size="17" />
-            <input v-model="query" type="search" placeholder="搜索任务" @keyup.enter="applyKeywordSearch" />
-            <button type="button" aria-label="搜索任务" @click="applyKeywordSearch">搜索</button>
+            <input v-model="query" type="search" placeholder="搜索标题或描述" aria-label="搜索任务" />
+            <button v-if="query" type="button" aria-label="清除搜索" title="清除搜索" @click="clearSearch">
+              <X :size="15" />
+            </button>
           </div>
 
-          <div class="reminder-menu">
+          <div ref="reminderMenuRef" class="reminder-menu">
             <button
               class="icon-tool"
               type="button"
@@ -966,7 +1111,7 @@ function priorityText(priority) {
             </div>
           </div>
 
-          <div class="filter-menu">
+          <div ref="filterMenuRef" class="filter-menu">
             <button
               class="tool-button"
               type="button"
@@ -1032,14 +1177,27 @@ function priorityText(priority) {
         <span v-if="taskStats.overdue" class="summary-overdue"><b>{{ taskStats.overdue }}</b> 已逾期</span>
       </div>
 
-      <p v-if="errorMessage" class="notice error">{{ errorMessage }}</p>
+      <div v-if="errorMessage" class="notice error list-error" role="alert">
+        <span>{{ errorMessage }}</span>
+        <button type="button" @click="refreshTasks">重试</button>
+      </div>
       <div class="task-list">
+        <template v-if="isTaskListLoading">
+          <div v-for="index in 5" :key="index" class="task-skeleton" aria-hidden="true">
+            <span></span>
+            <div><i></i><i></i></div>
+            <em></em>
+          </div>
+        </template>
+
         <article
-          v-for="task in visibleTasks"
+          v-for="task in isTaskListLoading ? [] : visibleTasks"
           :key="task.id"
           class="task-item"
           :class="{ selected: selectedTask?.id === task.id, done: task.status === 'DONE' }"
+          tabindex="0"
           @click="openTaskDetail(task)"
+          @keydown.enter="openTaskDetail(task)"
         >
           <button
             class="task-check"
@@ -1053,22 +1211,31 @@ function priorityText(priority) {
           <div class="task-content">
             <div class="task-title-row">
               <h2>{{ task.title }}</h2>
-              <span class="task-due" :class="{ overdue: isTaskOverdue(task) }">
-                <CalendarDays :size="14" />
-                {{ formatDueAt(task.dueAt) }}
-              </span>
             </div>
+            <p v-if="task.description">{{ task.description }}</p>
+          </div>
+          <div class="task-meta">
+            <span class="status-pill" :class="`status-${task.status}`">{{ statusText(task.status) }}</span>
+            <span class="priority-pill" :class="`priority-${task.priority}`">
+              <Flag :size="13" />
+              {{ priorityText(task.priority) }}
+            </span>
+            <span v-if="task.dueAt" class="task-due" :class="{ overdue: isTaskOverdue(task) }">
+              <CalendarDays :size="14" />
+              {{ formatDueAt(task.dueAt) }}
+            </span>
           </div>
         </article>
 
-        <section v-if="visibleTasks.length === 0" class="empty-panel">
+        <section v-if="!isTaskListLoading && visibleTasks.length === 0" class="empty-panel">
           <ListTodo :size="34" />
-          <h2>这里还没有任务</h2>
-          <p>使用右上角的新建任务开始规划。</p>
+          <h2>{{ emptyState.title }}</h2>
+          <p>{{ emptyState.description }}</p>
+          <button type="button" @click="handleEmptyAction">{{ emptyState.action }}</button>
         </section>
       </div>
 
-      <div class="pagination-bar">
+      <div v-if="taskPage.pages > 1 || taskPage.total > 10" class="pagination-bar">
         <div class="page-info">
           <span>共 {{ taskPage.total }} 条</span>
           <strong>{{ taskPage.page }} / {{ taskPage.pages || 1 }}</strong>
@@ -1129,7 +1296,7 @@ function priorityText(priority) {
                 {{ option.label }}
               </button>
             </div>
-            <div class="due-menu" :class="{ open: isDuePanelOpen }">
+            <div ref="dueMenuRef" class="due-menu" :class="{ open: isDuePanelOpen }">
               <button class="due-button" type="button" @click="isDuePanelOpen = !isDuePanelOpen">
                 <CalendarDays :size="17" />
                 <span>{{ dueButtonLabel }}</span>
@@ -1173,9 +1340,9 @@ function priorityText(priority) {
 
     <aside v-if="selectedTask" class="detail-panel">
       <header class="detail-header">
-        <div>
+        <div class="detail-heading-copy">
           <p>任务详情</p>
-          <h2>{{ selectedTask.title }}</h2>
+          <span>整理任务的关键信息</span>
         </div>
         <button type="button" class="icon-button" aria-label="关闭详情" @click="closeTaskDetail">
           <X :size="18" />
@@ -1185,151 +1352,193 @@ function priorityText(priority) {
       <p v-if="detailError" class="notice error">{{ detailError }}</p>
 
       <form class="detail-form" @submit.prevent="handleUpdateTask">
-        <label class="field">
+        <label class="detail-title-field">
           <span>标题</span>
           <input v-model="editForm.title" type="text" maxlength="100" />
         </label>
 
-        <label class="field">
+        <label class="detail-description-field">
           <span>描述</span>
-          <input v-model="editForm.description" type="text" maxlength="100" placeholder="补充任务说明" />
+          <textarea v-model="editForm.description" maxlength="100" rows="3" placeholder="补充任务说明"></textarea>
         </label>
 
-        <div class="detail-section">
-          <span class="detail-label">状态</span>
-          <div class="status-segment" aria-label="编辑任务状态">
-            <button
-              v-for="option in statusOptions"
-              :key="option.value"
-              type="button"
-              :class="{ active: selectedTask.status === option.value }"
-              @click="handleStatusChange(selectedTask, option.value)"
-            >
-              <Circle v-if="option.value === 'TODO'" :size="15" />
-              <RefreshCw v-else-if="option.value === 'IN_PROGRESS'" :size="15" />
-              <Check v-else :size="15" />
-              <span>{{ option.label }}</span>
+        <div class="property-stack">
+          <section class="property-item" :class="{ expanded: expandedDetailSection === 'status' }">
+            <button class="property-trigger" type="button" @click="toggleDetailSection('status')">
+              <span class="property-icon status-icon" :class="`status-${selectedTask.status}`">
+                <Circle v-if="selectedTask.status === 'TODO'" :size="16" />
+                <RefreshCw v-else-if="selectedTask.status === 'IN_PROGRESS'" :size="16" />
+                <Check v-else :size="16" />
+              </span>
+              <span class="property-copy">
+                <small>状态</small>
+                <strong>{{ statusText(selectedTask.status) }}</strong>
+              </span>
+              <ChevronDown class="property-chevron" :size="17" />
             </button>
-          </div>
-        </div>
 
-        <div class="detail-section">
-          <span class="detail-label">优先级</span>
-          <div class="priority-segment" aria-label="编辑优先级">
-            <button
-              v-for="option in priorityOptions"
-              :key="option.value"
-              type="button"
-              :class="[{ active: editForm.priority === option.value }, option.tone]"
-              @click="editForm.priority = option.value"
-            >
-              {{ option.label }}
-            </button>
-          </div>
-        </div>
-
-        <div class="detail-section">
-          <span class="detail-label">截止时间</span>
-          <div class="due-editor">
-            <div class="due-editor-preview">
-              <CalendarDays :size="18" />
-              <div>
-                <strong>{{ formatDateLabel(editForm.dueDate) }}</strong>
-                <span>{{ formatTimeLabel(editForm.dueTime) }}</span>
+            <Transition name="property-reveal">
+              <div v-if="expandedDetailSection === 'status'" class="property-editor status-option-grid">
+                <button
+                  v-for="option in statusOptions"
+                  :key="option.value"
+                  type="button"
+                  :class="{ active: selectedTask.status === option.value }"
+                  @click="selectDetailStatus(option.value)"
+                >
+                  <Circle v-if="option.value === 'TODO'" :size="16" />
+                  <RefreshCw v-else-if="option.value === 'IN_PROGRESS'" :size="16" />
+                  <Check v-else :size="16" />
+                  <span>{{ option.label }}</span>
+                </button>
               </div>
-            </div>
+            </Transition>
+          </section>
 
-            <div class="due-editor-actions">
-              <button type="button" @click="setEditDueToday">今天傍晚</button>
-              <button type="button" @click="setEditDueTomorrow">明天傍晚</button>
-            </div>
+          <section class="property-item" :class="{ expanded: expandedDetailSection === 'priority' }">
+            <button class="property-trigger" type="button" @click="toggleDetailSection('priority')">
+              <span class="property-icon priority-icon" :class="`priority-${editForm.priority}`">
+                <Flag :size="16" />
+              </span>
+              <span class="property-copy">
+                <small>优先级</small>
+                <strong>{{ priorityText(editForm.priority) }}优先级</strong>
+              </span>
+              <ChevronDown class="property-chevron" :size="17" />
+            </button>
 
-            <div class="date-part-grid" aria-label="编辑截止日期">
-              <label>
-                <span>年</span>
-                <input
-                  :value="editDateParts.year"
-                  inputmode="numeric"
-                  maxlength="4"
-                  placeholder="2026"
-                  @input="updateEditDatePart('year', $event.target.value)"
-                />
-              </label>
-              <label>
-                <span>月</span>
-                <input
-                  :value="editDateParts.month"
-                  inputmode="numeric"
-                  maxlength="2"
-                  placeholder="07"
-                  @input="updateEditDatePart('month', $event.target.value)"
-                />
-              </label>
-              <label>
-                <span>日</span>
-                <input
-                  :value="editDateParts.day"
-                  inputmode="numeric"
-                  maxlength="2"
-                  placeholder="08"
-                  @input="updateEditDatePart('day', $event.target.value)"
-                />
-              </label>
-            </div>
+            <Transition name="property-reveal">
+              <div v-if="expandedDetailSection === 'priority'" class="property-editor priority-option-grid">
+                <button
+                  v-for="option in priorityOptions"
+                  :key="option.value"
+                  type="button"
+                  :class="[{ active: editForm.priority === option.value }, option.tone]"
+                  @click="selectDetailPriority(option.value)"
+                >
+                  <Flag :size="15" />
+                  <span>{{ option.label }}优先级</span>
+                </button>
+              </div>
+            </Transition>
+          </section>
 
-            <div class="time-part-grid" aria-label="编辑截止时间">
-              <label>
-                <span>时</span>
-                <input
-                  :value="editTimeParts.hour"
-                  inputmode="numeric"
-                  maxlength="2"
-                  placeholder="18"
-                  @input="updateEditTimePart('hour', $event.target.value)"
-                />
-              </label>
-              <i>:</i>
-              <label>
-                <span>分</span>
-                <input
-                  :value="editTimeParts.minute"
-                  inputmode="numeric"
-                  maxlength="2"
-                  placeholder="00"
-                  @input="updateEditTimePart('minute', $event.target.value)"
-                />
-              </label>
-            </div>
-          </div>
+          <section class="property-item" :class="{ expanded: expandedDetailSection === 'due' }">
+            <button class="property-trigger" type="button" @click="toggleDetailSection('due')">
+              <span class="property-icon due-icon"><CalendarDays :size="16" /></span>
+              <span class="property-copy">
+                <small>截止时间</small>
+                <strong>
+                  {{ editForm.dueDate ? `${formatDateLabel(editForm.dueDate)} · ${formatTimeLabel(editForm.dueTime)}` : '未设置' }}
+                </strong>
+              </span>
+              <ChevronDown class="property-chevron" :size="17" />
+            </button>
+
+            <Transition name="property-reveal">
+              <div v-if="expandedDetailSection === 'due'" class="property-editor compact-due-editor">
+                <div class="due-editor-actions">
+                  <button type="button" @click="setEditDueToday">今天傍晚</button>
+                  <button type="button" @click="setEditDueTomorrow">明天傍晚</button>
+                </div>
+
+                <div class="date-part-grid" aria-label="编辑截止日期">
+                  <label>
+                    <span>年</span>
+                    <input
+                      :value="editDateParts.year"
+                      inputmode="numeric"
+                      maxlength="4"
+                      placeholder="2026"
+                      @input="updateEditDatePart('year', $event.target.value)"
+                    />
+                  </label>
+                  <label>
+                    <span>月</span>
+                    <input
+                      :value="editDateParts.month"
+                      inputmode="numeric"
+                      maxlength="2"
+                      placeholder="07"
+                      @input="updateEditDatePart('month', $event.target.value)"
+                    />
+                  </label>
+                  <label>
+                    <span>日</span>
+                    <input
+                      :value="editDateParts.day"
+                      inputmode="numeric"
+                      maxlength="2"
+                      placeholder="08"
+                      @input="updateEditDatePart('day', $event.target.value)"
+                    />
+                  </label>
+                </div>
+
+                <div class="time-part-grid" aria-label="编辑截止时间">
+                  <label>
+                    <span>时</span>
+                    <input
+                      :value="editTimeParts.hour"
+                      inputmode="numeric"
+                      maxlength="2"
+                      placeholder="18"
+                      @input="updateEditTimePart('hour', $event.target.value)"
+                    />
+                  </label>
+                  <i>:</i>
+                  <label>
+                    <span>分</span>
+                    <input
+                      :value="editTimeParts.minute"
+                      inputmode="numeric"
+                      maxlength="2"
+                      placeholder="00"
+                      @input="updateEditTimePart('minute', $event.target.value)"
+                    />
+                  </label>
+                </div>
+              </div>
+            </Transition>
+          </section>
+
+          <section class="property-item activity-item" :class="{ expanded: expandedDetailSection === 'activity' }">
+            <button class="property-trigger" type="button" @click="toggleDetailSection('activity')">
+              <span class="property-icon activity-icon"><History :size="16" /></span>
+              <span class="property-copy">
+                <small>活动信息</small>
+                <strong>创建与最近更新</strong>
+              </span>
+              <ChevronDown class="property-chevron" :size="17" />
+            </button>
+
+            <Transition name="property-reveal">
+              <div v-if="expandedDetailSection === 'activity'" class="property-editor activity-list">
+                <div>
+                  <CalendarDays :size="15" />
+                  <span>创建</span>
+                  <strong>{{ formatFullDateTime(selectedTask.createdAt) }}</strong>
+                </div>
+                <div>
+                  <RefreshCw :size="15" />
+                  <span>更新</span>
+                  <strong>{{ formatFullDateTime(selectedTask.updatedAt) }}</strong>
+                </div>
+              </div>
+            </Transition>
+          </section>
         </div>
 
-        <div class="detail-meta">
-          <div class="meta-tile">
-            <Inbox :size="17" />
-            <span>状态</span>
-            <strong>{{ statusText(selectedTask.status) }}</strong>
-          </div>
-          <div class="meta-tile">
-            <CalendarDays :size="17" />
-            <span>创建</span>
-            <strong>{{ formatFullDateTime(selectedTask.createdAt) }}</strong>
-          </div>
-          <div class="meta-tile">
-            <RefreshCw :size="17" />
-            <span>更新</span>
-            <strong>{{ formatFullDateTime(selectedTask.updatedAt) }}</strong>
-          </div>
+        <div class="detail-actions">
+          <button class="primary-button detail-save" type="submit" :disabled="isDetailSaving || isDetailLoading">
+            <Save :size="17" />
+            <span>{{ isDetailSaving ? '保存中...' : '保存修改' }}</span>
+          </button>
+
+          <button class="danger-icon-button" type="button" aria-label="删除任务" title="删除任务" @click="handleDeleteTask">
+            <Trash2 :size="17" />
+          </button>
         </div>
-
-        <button class="primary-button detail-save" type="submit" :disabled="isDetailSaving || isDetailLoading">
-          <Save :size="17" />
-          <span>{{ isDetailSaving ? '保存中...' : '保存修改' }}</span>
-        </button>
-
-        <button class="danger-button" type="button" @click="handleDeleteTask">
-          <Trash2 :size="17" />
-          <span>删除任务</span>
-        </button>
       </form>
     </aside>
   </main>

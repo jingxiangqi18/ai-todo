@@ -13,9 +13,11 @@ import com.qijx.aitodo.user.dto.UserLoginRequest;
 import com.qijx.aitodo.user.dto.UserRegisterRequest;
 import com.qijx.aitodo.user.dto.UserResponse;
 import com.qijx.aitodo.user.service.JwtService;
+import com.qijx.aitodo.user.service.LoginRateLimitService;
 import com.qijx.aitodo.user.service.UserService;
 import com.qijx.aitodo.user.dto.UserLoginResponse;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 
 @RestController
@@ -23,10 +25,12 @@ import jakarta.validation.Valid;
 public class UserController {
     private final UserService userService;
     private final JwtService jwtService;
+    private final LoginRateLimitService loginRateLimitService;
 
-    public UserController(UserService userService, JwtService jwtService){
+    public UserController(UserService userService, JwtService jwtService, LoginRateLimitService loginRateLimitService){
         this.userService = userService;
         this.jwtService = jwtService;
+        this.loginRateLimitService = loginRateLimitService;
     }
 
     @PostMapping("/register")
@@ -36,7 +40,14 @@ public class UserController {
     }
 
     @PostMapping("/login")
-    public UserLoginResponse login(@Valid @RequestBody UserLoginRequest request){
+    public UserLoginResponse login(
+        @Valid @RequestBody UserLoginRequest request,
+        HttpServletRequest httpServletRequest
+    ){
+        String clientIp = httpServletRequest.getRemoteAddr();
+
+        loginRateLimitService.checkLoginRateLimit(clientIp);
+        
         return userService.login(request);
     }
 
