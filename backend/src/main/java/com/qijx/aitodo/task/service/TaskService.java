@@ -1,8 +1,10 @@
 package com.qijx.aitodo.task.service;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -18,12 +20,22 @@ import com.qijx.aitodo.task.dto.TaskUpdateRequest;
 import com.qijx.aitodo.task.entity.Task;
 import com.qijx.aitodo.task.mapper.TaskMapper;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+
 @Service
 public class TaskService {
     private final TaskMapper taskMapper;
+    private static final String TASK_STATS_CACHE_KEY_PREFIX = "task:stats:";
+    private static final Duration TASK_STATS_CACHE_TTL = Duration.ofMinutes(1);
 
-    public TaskService(TaskMapper taskMapper){
+    private final StringRedisTemplate stringRedisTemplate;
+    private final ObjectMapper objectMapper;
+
+    public TaskService(TaskMapper taskMapper, StringRedisTemplate stringRedisTemplate, ObjectMapper objectMapper){
         this.taskMapper = taskMapper;
+        this.stringRedisTemplate = stringRedisTemplate;
+        this.objectMapper = objectMapper;
     }
 
     public TaskResponse createTask(Long userId, TaskCreateRequest request){
@@ -41,6 +53,8 @@ public class TaskService {
         task.setUpdatedAt(now);
 
         taskMapper.insert(task);
+
+        invalidateTaskStatsCache(userId);
 
         return toResponse(task);
     }
@@ -143,6 +157,8 @@ public class TaskService {
 
         taskMapper.updateById(task);
 
+        invalidateTaskStatsCache(userId);
+
         return toResponse(task);
     }
 
@@ -162,6 +178,8 @@ public class TaskService {
 
         taskMapper.updateById(task);
 
+        invalidateTaskStatsCache(userId);
+
         return toResponse(task);
     }
 
@@ -176,10 +194,23 @@ public class TaskService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在");
         }
 
+        invalidateTaskStatsCache(userId);
+
         taskMapper.deleteById(taskId);
     }
 
     public TaskStatsResponse getTaskStats(Long userId){
+        String cacheKey = TASK_STATS_CACHE_KEY_PREFIX + userId;
+        String cachedJson = stringRedisTemplate.opsForValue().get(cacheKey);
+
+        if(cachedJson != null){
+            try{
+                return objectMapper.readValue(cachedJson, TaskStatsResponse.class);
+            } catch(JsonProcessingException exception){
+                stringRedisTemplate.delete(cacheKey);
+            }
+        }
+
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime todayStart = now.toLocalDate().atStartOfDay();
         LocalDateTime tomorrowStart = todayStart.plusDays(1);
@@ -193,6 +224,8 @@ public class TaskService {
         response.setHighPriority(countByPriority(userId, "HIGH"));
         response.setDueToday(countDueToday(userId, todayStart, tomorrowStart));
         response.setOverdue(countOverdue(userId, now));
+
+        cacheTaskStats(cacheKey, response);
 
         return response;
     }
@@ -297,5 +330,31 @@ public class TaskService {
                     .ne(Task::getStatus, "DONE")
                     .lt(Task::getDueAt, now)
         );
+    }
+
+    private void cacheTaskStats(
+        String cacheKey,
+        TaskStatsResponse response
+    ){
+        try{
+            String responseJson = objectMapper.writeValueAsString(response);
+
+            stringRedisTemplate.opsForValue().set(
+                cacheKey,
+                responseJson,
+                TASK_STATS_CACHE_TTL
+            );
+        }catch(JsonProcessingException exception){
+            throw new IllegalStateException(
+                "任务统计缓存序列化失败",
+                exception
+            );
+        }
+    }
+
+    private void invalidateTaskStatsCache(Long userId){
+        String cacheKey = TASK_STATS_CACHE_KEY_PREFIX + userId;
+
+        stringRedisTemplate.delete(cacheKey);
     }
 }
