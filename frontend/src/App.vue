@@ -10,9 +10,11 @@ import {
   Circle,
   Flag,
   History,
+  ListChecks,
   ListTodo,
   LogOut,
   Menu,
+  Pencil,
   Plus,
   RefreshCw,
   Save,
@@ -25,15 +27,19 @@ import {
   UserRound
 } from '@lucide/vue'
 import {
+  createTaskStep,
   createTask,
+  deleteTaskStep,
   deleteTask,
   getCurrentUser,
   getTask,
   getTaskReminders,
   getTaskStats,
+  listTaskSteps,
   listTasks,
   loginUser,
   registerUser,
+  updateTaskStep,
   updateTask,
   updateTaskStatus
 } from './services/api'
@@ -56,14 +62,30 @@ const isReminderOpen = ref(false)
 const isSidebarOpen = ref(false)
 const selectedTask = ref(null)
 const expandedDetailSection = ref(null)
+const taskSteps = ref([])
+const stepDraft = ref('')
+const editingStepId = ref(null)
+const editingStepTitle = ref('')
+const stepDeleteCandidateId = ref(null)
 const reminders = ref([])
 const detailError = ref('')
 const isDetailLoading = ref(false)
 const isDetailSaving = ref(false)
+const isStepListLoading = ref(false)
+const isStepSubmitting = ref(false)
+const stepPendingIds = reactive(new Set())
 const filterMenuRef = ref(null)
 const reminderMenuRef = ref(null)
 const dueMenuRef = ref(null)
+const detailPropertiesRef = ref(null)
 let searchTimer
+
+const vFocus = {
+  mounted(element) {
+    element.focus()
+    element.select()
+  }
+}
 
 const authForm = reactive({
   account: '',
@@ -112,6 +134,25 @@ const taskStats = reactive({
 
 const editDateParts = computed(() => splitDateParts(editForm.dueDate))
 const editTimeParts = computed(() => splitTimeParts(editForm.dueTime))
+const completedStepCount = computed(() => taskSteps.value.filter((step) => step.completed).length)
+const taskStepSummary = computed(() => {
+  if (isStepListLoading.value) {
+    return '正在读取步骤'
+  }
+
+  if (!taskSteps.value.length) {
+    return '添加执行步骤'
+  }
+
+  return `${completedStepCount.value} / ${taskSteps.value.length} 已完成`
+})
+const taskStepProgress = computed(() => {
+  if (!taskSteps.value.length) {
+    return 0
+  }
+
+  return Math.round((completedStepCount.value / taskSteps.value.length) * 100)
+})
 
 const priorityOptions = [
   { value: 'LOW', label: '低', tone: 'priority-LOW' },
@@ -251,6 +292,11 @@ function handleDocumentPointerDown(event) {
 
   if (isDuePanelOpen.value && dueMenuRef.value && !path.includes(dueMenuRef.value)) {
     isDuePanelOpen.value = false
+  }
+
+  if (expandedDetailSection.value && detailPropertiesRef.value && !path.includes(detailPropertiesRef.value)) {
+    expandedDetailSection.value = null
+    stepDeleteCandidateId.value = null
   }
 }
 
@@ -715,21 +761,44 @@ function splitTimeParts(value) {
 }
 
 async function openTaskDetail(task) {
+  const taskId = task.id
   selectedTask.value = task
   expandedDetailSection.value = null
+  taskSteps.value = []
+  stepDraft.value = ''
+  stepPendingIds.clear()
+  resetStepEditor()
   isReminderOpen.value = false
   detailError.value = ''
   fillEditForm(task)
   isDetailLoading.value = true
+  isStepListLoading.value = true
 
-  try {
-    const latest = await getTask(task.id)
-    selectedTask.value = latest
-    fillEditForm(latest)
-  } catch (error) {
-    detailError.value = error.message || '读取任务详情失败。'
-  } finally {
+  const [taskResult, stepsResult] = await Promise.allSettled([
+    getTask(taskId),
+    listTaskSteps(taskId)
+  ])
+
+  if (selectedTask.value?.id !== taskId) {
+    return
+  }
+
+  if (taskResult.status === 'fulfilled') {
+    selectedTask.value = taskResult.value
+    fillEditForm(taskResult.value)
+  } else {
+    detailError.value = taskResult.reason?.message || '读取任务详情失败。'
+  }
+
+  if (stepsResult.status === 'fulfilled') {
+    taskSteps.value = Array.isArray(stepsResult.value) ? stepsResult.value : []
+  } else {
+    detailError.value = stepsResult.reason?.message || detailError.value || '读取任务步骤失败。'
+  }
+
+  if (selectedTask.value?.id === taskId) {
     isDetailLoading.value = false
+    isStepListLoading.value = false
   }
 }
 
@@ -868,11 +937,18 @@ function upsertTask(task) {
 function closeTaskDetail() {
   selectedTask.value = null
   expandedDetailSection.value = null
+  taskSteps.value = []
+  stepDraft.value = ''
+  stepPendingIds.clear()
+  resetStepEditor()
+  isDetailLoading.value = false
+  isStepListLoading.value = false
   detailError.value = ''
 }
 
 function toggleDetailSection(section) {
   expandedDetailSection.value = expandedDetailSection.value === section ? null : section
+  stepDeleteCandidateId.value = null
 }
 
 async function selectDetailStatus(status) {
@@ -883,6 +959,142 @@ async function selectDetailStatus(status) {
 function selectDetailPriority(priority) {
   editForm.priority = priority
   expandedDetailSection.value = null
+}
+
+function resetStepEditor() {
+  editingStepId.value = null
+  editingStepTitle.value = ''
+  stepDeleteCandidateId.value = null
+}
+
+function replaceTaskStep(updatedStep) {
+  taskSteps.value = taskSteps.value.map((step) => (step.id === updatedStep.id ? updatedStep : step))
+}
+
+async function handleCreateStep() {
+  const taskId = selectedTask.value?.id
+  const title = stepDraft.value.trim()
+
+  detailError.value = ''
+
+  if (!taskId || isStepSubmitting.value) {
+    return
+  }
+
+  if (!title || title.length > 100) {
+    detailError.value = '步骤标题不能为空，且不能超过 100 个字符。'
+    return
+  }
+
+  isStepSubmitting.value = true
+
+  try {
+    const created = await createTaskStep(taskId, { title })
+
+    if (selectedTask.value?.id === taskId) {
+      taskSteps.value = [...taskSteps.value, created]
+      stepDraft.value = ''
+    }
+  } catch (error) {
+    detailError.value = error.message || '创建任务步骤失败。'
+  } finally {
+    isStepSubmitting.value = false
+  }
+}
+
+async function toggleTaskStep(step) {
+  const taskId = selectedTask.value?.id
+
+  if (!taskId || stepPendingIds.has(step.id)) {
+    return
+  }
+
+  const previous = { ...step }
+  const optimistic = { ...step, completed: !step.completed }
+  detailError.value = ''
+  stepPendingIds.add(step.id)
+  replaceTaskStep(optimistic)
+
+  try {
+    const updated = await updateTaskStep(taskId, step.id, { completed: optimistic.completed })
+
+    if (selectedTask.value?.id === taskId) {
+      replaceTaskStep(updated)
+    }
+  } catch (error) {
+    if (selectedTask.value?.id === taskId) {
+      replaceTaskStep(previous)
+      detailError.value = error.message || '更新任务步骤失败。'
+    }
+  } finally {
+    stepPendingIds.delete(step.id)
+  }
+}
+
+function startStepEditing(step) {
+  editingStepId.value = step.id
+  editingStepTitle.value = step.title
+  stepDeleteCandidateId.value = null
+}
+
+async function saveStepTitle(step) {
+  const taskId = selectedTask.value?.id
+  const title = editingStepTitle.value.trim()
+
+  detailError.value = ''
+
+  if (!taskId || stepPendingIds.has(step.id)) {
+    return
+  }
+
+  if (!title) {
+    detailError.value = '步骤标题不能为空。'
+    return
+  }
+
+  if (title === step.title) {
+    resetStepEditor()
+    return
+  }
+
+  stepPendingIds.add(step.id)
+
+  try {
+    const updated = await updateTaskStep(taskId, step.id, { title })
+
+    if (selectedTask.value?.id === taskId) {
+      replaceTaskStep(updated)
+      resetStepEditor()
+    }
+  } catch (error) {
+    detailError.value = error.message || '修改步骤标题失败。'
+  } finally {
+    stepPendingIds.delete(step.id)
+  }
+}
+
+async function handleDeleteStep(step) {
+  const taskId = selectedTask.value?.id
+
+  if (!taskId || stepPendingIds.has(step.id)) {
+    return
+  }
+
+  detailError.value = ''
+  stepPendingIds.add(step.id)
+
+  try {
+    await deleteTaskStep(taskId, step.id)
+
+    if (selectedTask.value?.id === taskId) {
+      taskSteps.value = taskSteps.value.filter((item) => item.id !== step.id)
+      resetStepEditor()
+    }
+  } catch (error) {
+    detailError.value = error.message || '删除任务步骤失败。'
+  } finally {
+    stepPendingIds.delete(step.id)
+  }
 }
 
 function openComposer() {
@@ -1212,14 +1424,8 @@ function priorityText(priority) {
             <div class="task-title-row">
               <h2>{{ task.title }}</h2>
             </div>
-            <p v-if="task.description">{{ task.description }}</p>
           </div>
           <div class="task-meta">
-            <span class="status-pill" :class="`status-${task.status}`">{{ statusText(task.status) }}</span>
-            <span class="priority-pill" :class="`priority-${task.priority}`">
-              <Flag :size="13" />
-              {{ priorityText(task.priority) }}
-            </span>
             <span v-if="task.dueAt" class="task-due" :class="{ overdue: isTaskOverdue(task) }">
               <CalendarDays :size="14" />
               {{ formatDueAt(task.dueAt) }}
@@ -1252,18 +1458,13 @@ function priorityText(priority) {
           </button>
         </div>
 
-        <div class="page-size-segment" aria-label="每页数量">
-          <button
-            v-for="size in [10, 20, 50]"
-            :key="size"
-            type="button"
-            :class="{ active: taskPage.size === size }"
-            @click="changePageSize(size)"
-          >
-            {{ size }}
-          </button>
-          <span>条/页</span>
-        </div>
+        <label class="page-size-select">
+          <span class="sr-only">每页显示数量</span>
+          <select :value="taskPage.size" aria-label="每页显示数量" @change="changePageSize(Number($event.target.value))">
+            <option v-for="size in [10, 20, 50]" :key="size" :value="size">{{ size }} 条 / 页</option>
+          </select>
+          <ChevronDown :size="15" />
+        </label>
       </div>
 
       <div v-if="isComposerOpen" class="composer-overlay" @click.self="closeComposer">
@@ -1362,7 +1563,129 @@ function priorityText(priority) {
           <textarea v-model="editForm.description" maxlength="100" rows="3" placeholder="补充任务说明"></textarea>
         </label>
 
-        <div class="property-stack">
+        <div ref="detailPropertiesRef" class="property-stack">
+          <section class="property-item steps-item" :class="{ expanded: expandedDetailSection === 'steps' }">
+            <button class="property-trigger" type="button" @click="toggleDetailSection('steps')">
+              <span class="property-icon steps-icon"><ListChecks :size="17" /></span>
+              <span class="property-copy">
+                <small>执行步骤</small>
+                <strong>{{ taskStepSummary }}</strong>
+              </span>
+              <span v-if="taskSteps.length" class="step-count">{{ taskStepProgress }}%</span>
+              <ChevronDown class="property-chevron" :size="17" />
+            </button>
+
+            <Transition name="property-reveal">
+              <div v-if="expandedDetailSection === 'steps'" class="property-editor steps-editor">
+                <div v-if="taskSteps.length" class="steps-progress" aria-hidden="true">
+                  <span :style="{ width: `${taskStepProgress}%` }"></span>
+                </div>
+
+                <div v-if="isStepListLoading" class="steps-loading" role="status">
+                  <RefreshCw :size="15" />
+                  <span>正在读取步骤</span>
+                </div>
+
+                <div v-else class="steps-list">
+                  <div
+                    v-for="step in taskSteps"
+                    :key="step.id"
+                    class="step-row"
+                    :class="{ completed: step.completed, pending: stepPendingIds.has(step.id) }"
+                  >
+                    <button
+                      class="step-check"
+                      type="button"
+                      :class="{ completed: step.completed }"
+                      :aria-label="step.completed ? '恢复步骤' : '完成步骤'"
+                      :disabled="stepPendingIds.has(step.id)"
+                      @click="toggleTaskStep(step)"
+                    >
+                      <Check v-if="step.completed" :size="13" />
+                    </button>
+
+                    <template v-if="editingStepId === step.id">
+                      <input
+                        v-focus
+                        v-model="editingStepTitle"
+                        class="step-edit-input"
+                        type="text"
+                        maxlength="100"
+                        aria-label="编辑步骤标题"
+                        @keydown.enter.prevent="saveStepTitle(step)"
+                        @keydown.esc.prevent="resetStepEditor"
+                      />
+                      <div class="step-actions editing-actions">
+                        <button type="button" aria-label="保存步骤标题" title="保存" @click="saveStepTitle(step)">
+                          <Check :size="14" />
+                        </button>
+                        <button type="button" aria-label="取消编辑" title="取消" @click="resetStepEditor">
+                          <X :size="14" />
+                        </button>
+                      </div>
+                    </template>
+
+                    <template v-else>
+                      <span class="step-title" @dblclick="startStepEditing(step)">{{ step.title }}</span>
+                      <div class="step-actions">
+                        <template v-if="stepDeleteCandidateId === step.id">
+                          <button
+                            class="confirm-step-delete"
+                            type="button"
+                            aria-label="确认删除步骤"
+                            title="确认删除"
+                            @click="handleDeleteStep(step)"
+                          >
+                            <Check :size="14" />
+                          </button>
+                          <button type="button" aria-label="取消删除" title="取消" @click="stepDeleteCandidateId = null">
+                            <X :size="14" />
+                          </button>
+                        </template>
+                        <template v-else>
+                          <button type="button" aria-label="编辑步骤" title="编辑步骤" @click="startStepEditing(step)">
+                            <Pencil :size="14" />
+                          </button>
+                          <button
+                            type="button"
+                            aria-label="删除步骤"
+                            title="删除步骤"
+                            @click="stepDeleteCandidateId = step.id"
+                          >
+                            <Trash2 :size="14" />
+                          </button>
+                        </template>
+                      </div>
+                    </template>
+                  </div>
+
+                  <p v-if="!taskSteps.length" class="steps-empty">还没有执行步骤</p>
+                </div>
+
+                <div class="step-composer">
+                  <Plus :size="15" />
+                  <input
+                    v-model="stepDraft"
+                    type="text"
+                    maxlength="100"
+                    placeholder="添加下一步"
+                    aria-label="添加任务步骤"
+                    @keydown.enter.prevent="handleCreateStep"
+                  />
+                  <button
+                    type="button"
+                    aria-label="添加步骤"
+                    title="添加步骤"
+                    :disabled="isStepSubmitting || !stepDraft.trim()"
+                    @click="handleCreateStep"
+                  >
+                    <Plus :size="15" />
+                  </button>
+                </div>
+              </div>
+            </Transition>
+          </section>
+
           <section class="property-item" :class="{ expanded: expandedDetailSection === 'status' }">
             <button class="property-trigger" type="button" @click="toggleDetailSection('status')">
               <span class="property-icon status-icon" :class="`status-${selectedTask.status}`">

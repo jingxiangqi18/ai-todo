@@ -238,3 +238,27 @@ export function deleteTask(id) {
     method: 'DELETE'
   })
 }
+
+export function listTaskSteps(taskId) {
+  return request(`/tasks/${taskId}/steps`)
+}
+
+export function createTaskStep(taskId, payload) {
+  return request(`/tasks/${taskId}/steps`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function updateTaskStep(taskId, stepId, payload) {
+  return request(`/tasks/${taskId}/steps/${stepId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function deleteTaskStep(taskId, stepId) {
+  return request(`/tasks/${taskId}/steps/${stepId}`, {
+    method: 'DELETE'
+  })
+}

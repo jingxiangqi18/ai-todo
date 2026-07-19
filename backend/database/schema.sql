@@ -23,3 +23,17 @@ CREATE TABLE tasks(
     INDEX idx_tasks_user_status (user_id, status),
     CONSTRAINT fk_tasks_user_id FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+CREATE TABLE task_steps(
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    task_id BIGINT NOT NULL,
+    title VARCHAR(100) NOT NULL,
+    completed TINYINT(1) NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+
+    INDEX idx_task_steps_task_id (task_id),
+    CONSTRAINT fk_task_steps_task_id
+    FOREIGN KEY (task_id) REFERENCES tasks(id)
+    ON DELETE CASCADE
+);

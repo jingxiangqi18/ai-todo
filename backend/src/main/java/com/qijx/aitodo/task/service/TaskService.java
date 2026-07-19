@@ -16,6 +16,7 @@ import com.qijx.aitodo.task.dto.TaskPageResponse;
 import com.qijx.aitodo.task.dto.TaskResponse;
 import com.qijx.aitodo.task.dto.TaskStatsResponse;
 import com.qijx.aitodo.task.dto.TaskStatusUpdateRequest;
+import com.qijx.aitodo.task.dto.TaskStepResponse;
 import com.qijx.aitodo.task.dto.TaskUpdateRequest;
 import com.qijx.aitodo.task.entity.Task;
 import com.qijx.aitodo.task.mapper.TaskMapper;
@@ -30,12 +31,14 @@ public class TaskService {
     private static final Duration TASK_STATS_CACHE_TTL = Duration.ofMinutes(1);
 
     private final StringRedisTemplate stringRedisTemplate;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public TaskService(TaskMapper taskMapper, StringRedisTemplate stringRedisTemplate, ObjectMapper objectMapper){
+    public TaskService(
+        TaskMapper taskMapper,
+        StringRedisTemplate stringRedisTemplate
+    ){
         this.taskMapper = taskMapper;
         this.stringRedisTemplate = stringRedisTemplate;
-        this.objectMapper = objectMapper;
     }
 
     public TaskResponse createTask(Long userId, TaskCreateRequest request){
