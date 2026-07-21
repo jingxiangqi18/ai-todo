@@ -1,13 +1,17 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
+  BatteryMedium,
   Bell,
+  BrainCircuit,
   CalendarDays,
   Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Circle,
+  Clock3,
+  Copy,
   Flag,
   History,
   ListChecks,
@@ -19,10 +23,12 @@ import {
   RefreshCw,
   Save,
   Search,
+  SendHorizontal,
   SlidersHorizontal,
   Sparkles,
   Star,
   Trash2,
+  WandSparkles,
   X,
   UserRound
 } from '@lucide/vue'
@@ -33,6 +39,7 @@ import {
   deleteTask,
   getCurrentUser,
   getTask,
+  getTaskAdvice,
   getTaskReminders,
   getTaskStats,
   listTaskSteps,
@@ -60,6 +67,7 @@ const isComposerOpen = ref(false)
 const isFilterOpen = ref(false)
 const isReminderOpen = ref(false)
 const isSidebarOpen = ref(false)
+const isAiAdvisorOpen = ref(false)
 const selectedTask = ref(null)
 const expandedDetailSection = ref(null)
 const taskSteps = ref([])
@@ -73,12 +81,19 @@ const isDetailLoading = ref(false)
 const isDetailSaving = ref(false)
 const isStepListLoading = ref(false)
 const isStepSubmitting = ref(false)
+const isAiSubmitting = ref(false)
+const aiMessage = ref('')
+const aiAdvice = ref('')
+const aiError = ref('')
+const aiCopied = ref(false)
 const stepPendingIds = reactive(new Set())
 const filterMenuRef = ref(null)
 const reminderMenuRef = ref(null)
 const dueMenuRef = ref(null)
 const detailPropertiesRef = ref(null)
+const aiMessageInputRef = ref(null)
 let searchTimer
+let aiCopyTimer
 
 const vFocus = {
   mounted(element) {
@@ -153,6 +168,31 @@ const taskStepProgress = computed(() => {
 
   return Math.round((completedStepCount.value / taskSteps.value.length) * 100)
 })
+const unfinishedTaskCount = computed(() => Math.max(0, taskStats.total - taskStats.done))
+const isAiMessageValid = computed(() => {
+  const message = aiMessage.value.trim()
+
+  return message.length > 0 && message.length <= 1000
+})
+const aiAdviceBlocks = computed(() => parseAdvice(aiAdvice.value))
+
+const aiPromptOptions = [
+  {
+    label: '只有 30 分钟',
+    prompt: '我现在只有 30 分钟，请根据任务情况告诉我最适合先完成什么。',
+    icon: Clock3
+  },
+  {
+    label: '精力比较一般',
+    prompt: '我现在精力比较一般，请安排一些容易推进、又不会耽误重要进度的任务。',
+    icon: BatteryMedium
+  },
+  {
+    label: '安排今天剩余时间',
+    prompt: '请综合截止时间、优先级和当前进度，帮我安排今天剩余时间要处理的任务。',
+    icon: WandSparkles
+  }
+]
 
 const priorityOptions = [
   { value: 'LOW', label: '低', tone: 'priority-LOW' },
@@ -253,8 +293,15 @@ watch(query, () => {
   }, 320)
 })
 
+watch(aiMessage, () => {
+  if (aiError.value) {
+    aiError.value = ''
+  }
+})
+
 onMounted(async () => {
   document.addEventListener('pointerdown', handleDocumentPointerDown)
+  document.addEventListener('keydown', handleDocumentKeydown)
 
   const token = localStorage.getItem('aiTodoToken')
 
@@ -276,8 +323,17 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', handleDocumentPointerDown)
+  document.removeEventListener('keydown', handleDocumentKeydown)
   window.clearTimeout(searchTimer)
+  window.clearTimeout(aiCopyTimer)
+  document.body.classList.remove('modal-open')
 })
+
+function handleDocumentKeydown(event) {
+  if (event.key === 'Escape' && isAiAdvisorOpen.value) {
+    closeAiAdvisor()
+  }
+}
 
 function handleDocumentPointerDown(event) {
   const path = event.composedPath()
@@ -451,6 +507,7 @@ function switchAuthMode(mode) {
 }
 
 function logout() {
+  closeAiAdvisor()
   localStorage.removeItem('aiTodoToken')
   user.value = null
   tasks.value = []
@@ -1097,6 +1154,153 @@ async function handleDeleteStep(step) {
   }
 }
 
+async function openAiAdvisor() {
+  isAiAdvisorOpen.value = true
+  isComposerOpen.value = false
+  isDuePanelOpen.value = false
+  isFilterOpen.value = false
+  isReminderOpen.value = false
+  isSidebarOpen.value = false
+  aiError.value = ''
+  document.body.classList.add('modal-open')
+
+  await nextTick()
+  aiMessageInputRef.value?.focus()
+}
+
+function closeAiAdvisor() {
+  isAiAdvisorOpen.value = false
+  aiCopied.value = false
+  document.body.classList.remove('modal-open')
+}
+
+function applyAiPrompt(prompt) {
+  aiMessage.value = prompt
+  aiError.value = ''
+  nextTick(() => aiMessageInputRef.value?.focus())
+}
+
+async function handleAiAdviceSubmit() {
+  const message = aiMessage.value.trim()
+
+  aiError.value = ''
+  aiCopied.value = false
+
+  if (!message) {
+    aiError.value = '请先写下你现在的时间、精力或安排目标。'
+    return
+  }
+
+  if (message.length > 1000) {
+    aiError.value = '咨询内容不能超过 1000 个字符。'
+    return
+  }
+
+  isAiSubmitting.value = true
+
+  try {
+    const result = await getTaskAdvice({ message })
+    const advice = result?.advice?.trim()
+
+    if (!advice) {
+      throw new Error('AI 暂时没有返回可用的规划建议。')
+    }
+
+    aiAdvice.value = advice
+  } catch (error) {
+    aiError.value = error.message || '获取 AI 规划建议失败。'
+  } finally {
+    isAiSubmitting.value = false
+  }
+}
+
+async function copyAiAdvice() {
+  if (!aiAdvice.value) {
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(aiAdvice.value)
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = aiAdvice.value
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    textarea.remove()
+  }
+
+  aiCopied.value = true
+  window.clearTimeout(aiCopyTimer)
+  aiCopyTimer = window.setTimeout(() => {
+    aiCopied.value = false
+  }, 1800)
+}
+
+function parseAdvice(content) {
+  if (!content?.trim()) {
+    return []
+  }
+
+  const blocks = []
+  let activeList = null
+
+  const flushList = () => {
+    if (activeList) {
+      blocks.push(activeList)
+      activeList = null
+    }
+  }
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim()
+
+    if (!line) {
+      flushList()
+      continue
+    }
+
+    const heading = line.match(/^#{1,3}\s+(.+)$/)
+    const orderedItem = line.match(/^\d+[.、]\s*(.+)$/)
+    const unorderedItem = line.match(/^[-*•]\s+(.+)$/)
+
+    if (heading) {
+      flushList()
+      blocks.push({ type: 'heading', text: cleanAdviceText(heading[1]) })
+      continue
+    }
+
+    if (orderedItem || unorderedItem) {
+      const type = orderedItem ? 'ordered' : 'unordered'
+      const text = cleanAdviceText((orderedItem || unorderedItem)[1])
+
+      if (!activeList || activeList.type !== type) {
+        flushList()
+        activeList = { type, items: [] }
+      }
+
+      activeList.items.push(text)
+      continue
+    }
+
+    flushList()
+    blocks.push({ type: 'paragraph', text: cleanAdviceText(line) })
+  }
+
+  flushList()
+
+  return blocks
+}
+
+function cleanAdviceText(text) {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/__(.*?)__/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+}
+
 function openComposer() {
   isComposerOpen.value = true
   isDuePanelOpen.value = false
@@ -1375,6 +1579,11 @@ function priorityText(priority) {
             </div>
           </div>
 
+          <button class="tool-button ai-trigger" type="button" @click="openAiAdvisor">
+            <WandSparkles :size="17" />
+            <span>AI 规划</span>
+          </button>
+
           <button class="primary-button create-trigger" type="button" @click="openComposer">
             <Plus :size="17" />
             <span>新建任务</span>
@@ -1537,6 +1746,133 @@ function priorityText(priority) {
           </div>
         </form>
       </div>
+
+      <Transition name="ai-overlay">
+        <div v-if="isAiAdvisorOpen" class="ai-advisor-overlay" @click.self="closeAiAdvisor">
+          <section class="ai-advisor" role="dialog" aria-modal="true" aria-labelledby="ai-advisor-title">
+            <div class="ai-decoration" aria-hidden="true">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+
+            <header class="ai-advisor-header">
+              <div class="ai-heading-mark"><BrainCircuit :size="22" /></div>
+              <div class="ai-heading-copy">
+                <span>AI FOCUS STUDIO</span>
+                <h2 id="ai-advisor-title">现在，先做什么？</h2>
+              </div>
+              <button class="icon-button ai-close" type="button" aria-label="关闭 AI 规划" @click="closeAiAdvisor">
+                <X :size="19" />
+              </button>
+            </header>
+
+            <div class="ai-context-strip" aria-label="当前任务上下文">
+              <span><b>{{ unfinishedTaskCount }}</b> 未完成</span>
+              <span><b>{{ taskStats.inProgress }}</b> 进行中</span>
+              <span><b>{{ taskStats.highPriority }}</b> 高优先级</span>
+              <span><b>{{ taskStats.dueToday }}</b> 今天截止</span>
+            </div>
+
+            <div class="ai-workspace">
+              <form class="ai-prompt-panel" @submit.prevent="handleAiAdviceSubmit">
+                <div class="ai-section-heading">
+                  <span>01</span>
+                  <div>
+                    <small>CONTEXT</small>
+                    <h3>补充你的当前状态</h3>
+                  </div>
+                </div>
+
+                <div class="ai-prompt-options" aria-label="快捷咨询条件">
+                  <button
+                    v-for="option in aiPromptOptions"
+                    :key="option.label"
+                    type="button"
+                    :class="{ active: aiMessage === option.prompt }"
+                    @click="applyAiPrompt(option.prompt)"
+                  >
+                    <component :is="option.icon" :size="15" />
+                    <span>{{ option.label }}</span>
+                  </button>
+                </div>
+
+                <label class="ai-message-field">
+                  <span class="sr-only">咨询内容</span>
+                  <textarea
+                    ref="aiMessageInputRef"
+                    v-model="aiMessage"
+                    maxlength="1000"
+                    rows="7"
+                    placeholder="例如：我现在有 40 分钟，精力一般，希望先推进最紧急的任务。"
+                    @keydown.ctrl.enter.prevent="handleAiAdviceSubmit"
+                    @keydown.meta.enter.prevent="handleAiAdviceSubmit"
+                  ></textarea>
+                </label>
+
+                <p v-if="aiError" class="notice error ai-error" role="alert">{{ aiError }}</p>
+
+                <div class="ai-prompt-footer">
+                  <span :class="{ over: aiMessage.length > 1000 }">{{ aiMessage.length }} / 1000</span>
+                  <button class="ai-submit" type="submit" :disabled="isAiSubmitting || !isAiMessageValid">
+                    <SendHorizontal :size="16" />
+                    <span>{{ isAiSubmitting ? '正在规划' : aiAdvice ? '重新规划' : '生成安排' }}</span>
+                  </button>
+                </div>
+              </form>
+
+              <section class="ai-response-panel" aria-live="polite">
+                <div class="ai-section-heading response-heading">
+                  <span>02</span>
+                  <div>
+                    <small>FOCUS PLAN</small>
+                    <h3>本次安排</h3>
+                  </div>
+                  <button
+                    v-if="aiAdvice && !isAiSubmitting"
+                    class="ai-copy"
+                    type="button"
+                    :aria-label="aiCopied ? '已复制建议' : '复制建议'"
+                    :title="aiCopied ? '已复制' : '复制建议'"
+                    @click="copyAiAdvice"
+                  >
+                    <Check v-if="aiCopied" :size="15" />
+                    <Copy v-else :size="15" />
+                  </button>
+                </div>
+
+                <div v-if="isAiSubmitting" class="ai-thinking" role="status">
+                  <div class="thinking-lines" aria-hidden="true">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                  </div>
+                  <p>正在结合任务进度与截止时间...</p>
+                </div>
+
+                <article v-else-if="aiAdvice" class="ai-advice-content">
+                  <template v-for="(block, index) in aiAdviceBlocks" :key="`${block.type}-${index}`">
+                    <h4 v-if="block.type === 'heading'">{{ block.text }}</h4>
+                    <ol v-else-if="block.type === 'ordered'">
+                      <li v-for="item in block.items" :key="item">{{ item }}</li>
+                    </ol>
+                    <ul v-else-if="block.type === 'unordered'">
+                      <li v-for="item in block.items" :key="item">{{ item }}</li>
+                    </ul>
+                    <p v-else>{{ block.text }}</p>
+                  </template>
+                </article>
+
+                <div v-else class="ai-waiting">
+                  <BrainCircuit :size="34" />
+                  <strong>等待本次规划</strong>
+                  <span>把此刻的时间和精力写下来。</span>
+                </div>
+              </section>
+            </div>
+          </section>
+        </div>
+      </Transition>
     </section>
 
     <aside v-if="selectedTask" class="detail-panel">

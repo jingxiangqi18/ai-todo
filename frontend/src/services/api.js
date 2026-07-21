@@ -262,3 +262,10 @@ export function deleteTaskStep(taskId, stepId) {
     method: 'DELETE'
   })
 }
+
+export function getTaskAdvice(payload) {
+  return request('/ai/task-advice', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
