@@ -10,7 +10,7 @@ import com.qijx.aitodo.ai.dto.TaskAdviceRequest;
 import com.qijx.aitodo.ai.dto.TaskAdviceResponse;
 import com.qijx.aitodo.ai.service.AiAdviceService;
 import com.qijx.aitodo.user.service.JwtService;
-
+import com.qijx.aitodo.ai.service.AiRateLimitService;
 import jakarta.validation.Valid;
 
 @RestController
@@ -18,10 +18,12 @@ import jakarta.validation.Valid;
 public class AiAdviceController {
     private final AiAdviceService aiAdviceService;
     private final JwtService jwtService;
+    private final AiRateLimitService aiRateLimitService;
 
-    public AiAdviceController(AiAdviceService aiAdviceService, JwtService jwtService){
+    public AiAdviceController(AiAdviceService aiAdviceService, JwtService jwtService, AiRateLimitService aiRateLimitService){
         this.aiAdviceService = aiAdviceService;
         this.jwtService = jwtService;
+        this.aiRateLimitService = aiRateLimitService;
     }
 
     @PostMapping("/task-advice")
@@ -31,6 +33,8 @@ public class AiAdviceController {
     ){
         Long userId = jwtService.parseUserIdFromAuthorizationHeader(authorizationHeader);
 
+        aiRateLimitService.checkRateLimit(userId);
+        
         return aiAdviceService.generateAdvice(userId, request.getMessage());
     }
 }
