@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
+  AlignLeft,
   BatteryMedium,
   Bell,
   BrainCircuit,
@@ -71,6 +72,7 @@ const isAiAdvisorOpen = ref(false)
 const selectedTask = ref(null)
 const expandedDetailSection = ref(null)
 const taskSteps = ref([])
+const taskStepStatsById = reactive(new Map())
 const stepDraft = ref('')
 const editingStepId = ref(null)
 const editingStepTitle = ref('')
@@ -94,6 +96,7 @@ const detailPropertiesRef = ref(null)
 const aiMessageInputRef = ref(null)
 let searchTimer
 let aiCopyTimer
+let taskStepStatsRequestId = 0
 
 const vFocus = {
   mounted(element) {
@@ -125,6 +128,14 @@ const editForm = reactive({
   dueTime: ''
 })
 
+const editDueParts = reactive({
+  year: '',
+  month: '',
+  day: '',
+  hour: '',
+  minute: ''
+})
+
 const listFilters = reactive({
   status: '',
   priority: ''
@@ -147,8 +158,29 @@ const taskStats = reactive({
   overdue: 0
 })
 
-const editDateParts = computed(() => splitDateParts(editForm.dueDate))
-const editTimeParts = computed(() => splitTimeParts(editForm.dueTime))
+const editDateParts = computed(() => ({
+  year: editDueParts.year,
+  month: editDueParts.month,
+  day: editDueParts.day
+}))
+const editTimeParts = computed(() => ({
+  hour: editDueParts.hour,
+  minute: editDueParts.minute
+}))
+const editDescriptionSummary = computed(() => editForm.description.trim() || '添加任务描述')
+const editDueLabel = computed(() => {
+  const due = resolveEditDueValues()
+
+  if (due.error) {
+    return '日期或时间填写中'
+  }
+
+  if (!due.date) {
+    return '未设置'
+  }
+
+  return `${formatDateLabel(due.date)} · ${formatTimeLabel(due.time)}`
+})
 const completedStepCount = computed(() => taskSteps.value.filter((step) => step.completed).length)
 const taskStepSummary = computed(() => {
   if (isStepListLoading.value) {
@@ -416,6 +448,7 @@ async function handleCreateTask() {
     })
 
     tasks.value = [created, ...tasks.value]
+    syncTaskStepStats(created.id, [])
     taskPage.total += 1
     taskPage.pages = Math.max(1, Math.ceil(taskPage.total / taskPage.size))
     taskForm.title = ''
@@ -460,6 +493,8 @@ async function refreshTasks() {
       taskPage.total = result.total || 0
       taskPage.pages = result.pages || 1
     }
+
+    void refreshTaskStepStats(tasks.value)
 
     if (selectedTask.value) {
       const latest = tasks.value.find((task) => task.id === selectedTask.value.id)
@@ -511,6 +546,7 @@ function logout() {
   localStorage.removeItem('aiTodoToken')
   user.value = null
   tasks.value = []
+  taskStepStatsById.clear()
   reminders.value = []
   Object.assign(taskStats, {
     total: 0,
@@ -662,6 +698,99 @@ function formatDueAt(value) {
   return formatTaskDateTime(value)
 }
 
+function getTaskStepStats(taskId) {
+  return taskStepStatsById.get(taskId) || {
+    total: 0,
+    completed: 0,
+    progress: 0,
+    loading: true,
+    error: false
+  }
+}
+
+function taskStepListLabel(taskId) {
+  const stats = getTaskStepStats(taskId)
+
+  if (stats.loading) {
+    return '正在读取步骤'
+  }
+
+  if (stats.error) {
+    return '步骤暂不可用'
+  }
+
+  return `${stats.completed} / ${stats.total} 个步骤`
+}
+
+function createTaskStepStats(steps, requestId = ++taskStepStatsRequestId) {
+  const list = Array.isArray(steps) ? steps : []
+  const completed = list.filter((step) => step.completed).length
+  const total = list.length
+
+  return {
+    total,
+    completed,
+    progress: total ? Math.round((completed / total) * 100) : 0,
+    loading: false,
+    error: false,
+    requestId
+  }
+}
+
+function syncTaskStepStats(taskId, steps) {
+  if (taskId == null) {
+    return
+  }
+
+  taskStepStatsById.set(taskId, createTaskStepStats(steps))
+}
+
+async function refreshTaskStepStats(taskList) {
+  const pendingTasks = Array.isArray(taskList) ? [...taskList] : []
+
+  async function loadTaskStepStats(task) {
+    const requestId = ++taskStepStatsRequestId
+    const current = taskStepStatsById.get(task.id)
+
+    taskStepStatsById.set(task.id, {
+      total: current?.total || 0,
+      completed: current?.completed || 0,
+      progress: current?.progress || 0,
+      loading: !current,
+      error: false,
+      requestId
+    })
+
+    try {
+      const steps = await listTaskSteps(task.id)
+
+      if (taskStepStatsById.get(task.id)?.requestId === requestId) {
+        taskStepStatsById.set(task.id, createTaskStepStats(steps, requestId))
+      }
+    } catch {
+      if (taskStepStatsById.get(task.id)?.requestId === requestId) {
+        taskStepStatsById.set(task.id, {
+          total: current?.total || 0,
+          completed: current?.completed || 0,
+          progress: current?.progress || 0,
+          loading: false,
+          error: true,
+          requestId
+        })
+      }
+    }
+  }
+
+  const workerCount = Math.min(6, pendingTasks.length)
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (pendingTasks.length) {
+      await loadTaskStepStats(pendingTasks.shift())
+    }
+  })
+
+  await Promise.allSettled(workers)
+}
+
 function formatTaskDateTime(value) {
   const date = parseLocalDateTime(value)
 
@@ -765,44 +894,86 @@ function clearDue() {
 }
 
 function setEditDueToday() {
-  editForm.dueDate = todayKey.value
-  editForm.dueTime = editForm.dueTime || '18:00'
+  setEditDueParts(todayKey.value, resolveEditDueValues().time || '18:00')
 }
 
 function setEditDueTomorrow() {
   const tomorrow = new Date()
   tomorrow.setDate(tomorrow.getDate() + 1)
-  editForm.dueDate = toLocalDateKey(tomorrow)
-  editForm.dueTime = editForm.dueTime || '18:00'
+  setEditDueParts(toLocalDateKey(tomorrow), resolveEditDueValues().time || '18:00')
 }
 
 function updateEditDatePart(part, value) {
-  const current = splitDateParts(editForm.dueDate)
-  const fallback = splitDateParts(todayKey.value)
-  const next = {
-    year: current.year || fallback.year,
-    month: current.month || fallback.month,
-    day: current.day || fallback.day,
-    [part]: value
-  }
-
-  if (!next.year || !next.month || !next.day) {
-    editForm.dueDate = ''
-    return
-  }
-
-  editForm.dueDate = `${String(next.year).padStart(4, '0')}-${String(next.month).padStart(2, '0')}-${String(next.day).padStart(2, '0')}`
+  const maxLength = part === 'year' ? 4 : 2
+  editDueParts[part] = String(value).replace(/\D/g, '').slice(0, maxLength)
 }
 
 function updateEditTimePart(part, value) {
-  const current = splitTimeParts(editForm.dueTime)
-  const next = {
-    hour: current.hour || '18',
-    minute: current.minute || '00',
-    [part]: value
+  editDueParts[part] = String(value).replace(/\D/g, '').slice(0, 2)
+}
+
+function setEditDueParts(date, time) {
+  const dateParts = splitDateParts(date)
+  const timeParts = splitTimeParts(time)
+
+  Object.assign(editDueParts, {
+    year: dateParts.year,
+    month: dateParts.month,
+    day: dateParts.day,
+    hour: timeParts.hour,
+    minute: timeParts.minute
+  })
+}
+
+function resolveEditDueValues() {
+  const { year, month, day, hour, minute } = editDueParts
+  const hasDatePart = Boolean(year || month || day)
+  const hasTimePart = Boolean(hour || minute)
+
+  if (!hasDatePart) {
+    return hasTimePart
+      ? { error: '请先填写截止日期。', date: '', time: '' }
+      : { error: '', date: '', time: '' }
   }
 
-  editForm.dueTime = `${String(next.hour).padStart(2, '0')}:${String(next.minute).padStart(2, '0')}`
+  if (year.length !== 4 || !month || !day) {
+    return { error: '请完整填写截止日期。', date: '', time: '' }
+  }
+
+  const yearNumber = Number(year)
+  const monthNumber = Number(month)
+  const dayNumber = Number(day)
+  const candidate = new Date(yearNumber, monthNumber - 1, dayNumber)
+  const isValidDate =
+    yearNumber >= 1000 &&
+    monthNumber >= 1 &&
+    monthNumber <= 12 &&
+    dayNumber >= 1 &&
+    dayNumber <= 31 &&
+    candidate.getFullYear() === yearNumber &&
+    candidate.getMonth() === monthNumber - 1 &&
+    candidate.getDate() === dayNumber
+
+  if (!isValidDate) {
+    return { error: '截止日期无效，请重新填写。', date: '', time: '' }
+  }
+
+  if (hasTimePart && (!hour || !minute)) {
+    return { error: '请完整填写截止时间。', date: '', time: '' }
+  }
+
+  const hourNumber = hasTimePart ? Number(hour) : 23
+  const minuteNumber = hasTimePart ? Number(minute) : 59
+
+  if (hourNumber < 0 || hourNumber > 23 || minuteNumber < 0 || minuteNumber > 59) {
+    return { error: '截止时间无效，请重新填写。', date: '', time: '' }
+  }
+
+  return {
+    error: '',
+    date: `${year}-${String(monthNumber).padStart(2, '0')}-${String(dayNumber).padStart(2, '0')}`,
+    time: `${String(hourNumber).padStart(2, '0')}:${String(minuteNumber).padStart(2, '0')}`
+  }
 }
 
 function splitDateParts(value) {
@@ -849,6 +1020,7 @@ async function openTaskDetail(task) {
 
   if (stepsResult.status === 'fulfilled') {
     taskSteps.value = Array.isArray(stepsResult.value) ? stepsResult.value : []
+    syncTaskStepStats(taskId, taskSteps.value)
   } else {
     detailError.value = stepsResult.reason?.message || detailError.value || '读取任务步骤失败。'
   }
@@ -871,6 +1043,14 @@ async function handleUpdateTask() {
     return
   }
 
+  const due = resolveEditDueValues()
+
+  if (due.error) {
+    detailError.value = due.error
+    expandedDetailSection.value = 'due'
+    return
+  }
+
   isDetailSaving.value = true
 
   try {
@@ -880,8 +1060,8 @@ async function handleUpdateTask() {
       priority: editForm.priority
     }
 
-    if (editForm.dueDate) {
-      payload.dueAt = `${editForm.dueDate}T${editForm.dueTime || '23:59'}`
+    if (due.date) {
+      payload.dueAt = `${due.date}T${due.time}`
     }
 
     const updated = await updateTask(selectedTask.value.id, payload)
@@ -912,6 +1092,7 @@ async function handleDeleteTask() {
     const taskId = selectedTask.value.id
     await deleteTask(taskId)
     tasks.value = tasks.value.filter((task) => task.id !== taskId)
+    taskStepStatsById.delete(taskId)
     closeTaskDetail()
     await refreshTaskStats()
     await refreshTaskReminders()
@@ -965,6 +1146,7 @@ function fillEditForm(task) {
   const due = splitDueAt(task?.dueAt)
   editForm.dueDate = due.date
   editForm.dueTime = due.time
+  setEditDueParts(due.date, due.time)
 }
 
 function splitDueAt(value) {
@@ -1026,6 +1208,7 @@ function resetStepEditor() {
 
 function replaceTaskStep(updatedStep) {
   taskSteps.value = taskSteps.value.map((step) => (step.id === updatedStep.id ? updatedStep : step))
+  syncTaskStepStats(selectedTask.value?.id, taskSteps.value)
 }
 
 async function handleCreateStep() {
@@ -1050,6 +1233,7 @@ async function handleCreateStep() {
 
     if (selectedTask.value?.id === taskId) {
       taskSteps.value = [...taskSteps.value, created]
+      syncTaskStepStats(taskId, taskSteps.value)
       stepDraft.value = ''
     }
   } catch (error) {
@@ -1145,6 +1329,7 @@ async function handleDeleteStep(step) {
 
     if (selectedTask.value?.id === taskId) {
       taskSteps.value = taskSteps.value.filter((item) => item.id !== step.id)
+      syncTaskStepStats(taskId, taskSteps.value)
       resetStepEditor()
     }
   } catch (error) {
@@ -1482,7 +1667,7 @@ function priorityText(priority) {
           <h1>{{ currentView.label }}</h1>
         </div>
 
-        <div class="board-actions">
+        <div class="board-tools">
           <div class="search-box search-box-compact">
             <Search :size="17" />
             <input v-model="query" type="search" placeholder="搜索标题或描述" aria-label="搜索任务" />
@@ -1493,13 +1678,13 @@ function priorityText(priority) {
 
           <div ref="reminderMenuRef" class="reminder-menu">
             <button
-              class="icon-tool"
+              class="tool-button reminder-trigger"
               type="button"
               aria-label="查看即将到期任务"
-              title="未来 60 分钟"
               @click="isReminderOpen = !isReminderOpen; isFilterOpen = false"
             >
               <Bell :size="17" />
+              <span>未来 60 分钟</span>
               <b v-if="reminders.length">{{ reminders.length }}</b>
             </button>
 
@@ -1579,6 +1764,9 @@ function priorityText(priority) {
             </div>
           </div>
 
+        </div>
+
+        <div class="board-primary-actions">
           <button class="tool-button ai-trigger" type="button" @click="openAiAdvisor">
             <WandSparkles :size="17" />
             <span>AI 规划</span>
@@ -1603,6 +1791,13 @@ function priorityText(priority) {
         <button type="button" @click="refreshTasks">重试</button>
       </div>
       <div class="task-list">
+        <div v-if="!isTaskListLoading && visibleTasks.length" class="task-list-columns" aria-hidden="true">
+          <span></span>
+          <span>任务</span>
+          <span>执行进度</span>
+          <span>截止时间</span>
+        </div>
+
         <template v-if="isTaskListLoading">
           <div v-for="index in 5" :key="index" class="task-skeleton" aria-hidden="true">
             <span></span>
@@ -1632,6 +1827,32 @@ function priorityText(priority) {
           <div class="task-content">
             <div class="task-title-row">
               <h2>{{ task.title }}</h2>
+            </div>
+          </div>
+          <div
+            class="task-step-summary"
+            :class="{
+              loading: getTaskStepStats(task.id).loading,
+              unavailable: getTaskStepStats(task.id).error,
+              complete: getTaskStepStats(task.id).progress === 100
+            }"
+          >
+            <div class="task-step-copy">
+              <ListChecks :size="13" />
+              <span>{{ taskStepListLabel(task.id) }}</span>
+              <b v-if="!getTaskStepStats(task.id).loading && !getTaskStepStats(task.id).error">
+                {{ getTaskStepStats(task.id).progress }}%
+              </b>
+            </div>
+            <div
+              class="task-step-track"
+              role="progressbar"
+              :aria-label="`${task.title}的步骤完成进度`"
+              :aria-valuenow="getTaskStepStats(task.id).progress"
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <span :style="{ width: `${getTaskStepStats(task.id).progress}%` }"></span>
             </div>
           </div>
           <div class="task-meta">
@@ -1894,25 +2115,36 @@ function priorityText(priority) {
           <input v-model="editForm.title" type="text" maxlength="100" />
         </label>
 
-        <label class="detail-description-field">
-          <span>描述</span>
-          <textarea v-model="editForm.description" maxlength="100" rows="3" placeholder="补充任务说明"></textarea>
-        </label>
-
         <div ref="detailPropertiesRef" class="property-stack">
-          <section class="property-item steps-item" :class="{ expanded: expandedDetailSection === 'steps' }">
-            <button class="property-trigger" type="button" @click="toggleDetailSection('steps')">
+          <section class="property-item description-item" :class="{ expanded: expandedDetailSection === 'description' }">
+            <button class="property-trigger" type="button" @click="toggleDetailSection('description')">
+              <span class="property-icon description-icon"><AlignLeft :size="16" /></span>
+              <span class="property-copy">
+                <small>描述</small>
+                <strong>{{ editDescriptionSummary }}</strong>
+              </span>
+              <ChevronDown class="property-chevron" :size="17" />
+            </button>
+
+            <Transition name="property-reveal">
+              <div v-if="expandedDetailSection === 'description'" class="property-editor description-editor">
+                <textarea v-model="editForm.description" maxlength="100" rows="4" placeholder="补充任务说明"></textarea>
+                <span>{{ editForm.description.length }} / 100</span>
+              </div>
+            </Transition>
+          </section>
+
+          <section class="property-item steps-item expanded steps-always-open">
+            <div class="property-trigger steps-heading">
               <span class="property-icon steps-icon"><ListChecks :size="17" /></span>
               <span class="property-copy">
                 <small>执行步骤</small>
                 <strong>{{ taskStepSummary }}</strong>
               </span>
               <span v-if="taskSteps.length" class="step-count">{{ taskStepProgress }}%</span>
-              <ChevronDown class="property-chevron" :size="17" />
-            </button>
+            </div>
 
-            <Transition name="property-reveal">
-              <div v-if="expandedDetailSection === 'steps'" class="property-editor steps-editor">
+            <div class="property-editor steps-editor">
                 <div v-if="taskSteps.length" class="steps-progress" aria-hidden="true">
                   <span :style="{ width: `${taskStepProgress}%` }"></span>
                 </div>
@@ -2018,11 +2250,10 @@ function priorityText(priority) {
                     <Plus :size="15" />
                   </button>
                 </div>
-              </div>
-            </Transition>
+            </div>
           </section>
 
-          <section class="property-item" :class="{ expanded: expandedDetailSection === 'status' }">
+          <section class="property-item status-item" :class="{ expanded: expandedDetailSection === 'status' }">
             <button class="property-trigger" type="button" @click="toggleDetailSection('status')">
               <span class="property-icon status-icon" :class="`status-${selectedTask.status}`">
                 <Circle v-if="selectedTask.status === 'TODO'" :size="16" />
@@ -2054,7 +2285,7 @@ function priorityText(priority) {
             </Transition>
           </section>
 
-          <section class="property-item" :class="{ expanded: expandedDetailSection === 'priority' }">
+          <section class="property-item priority-item" :class="{ expanded: expandedDetailSection === 'priority' }">
             <button class="property-trigger" type="button" @click="toggleDetailSection('priority')">
               <span class="property-icon priority-icon" :class="`priority-${editForm.priority}`">
                 <Flag :size="16" />
@@ -2082,14 +2313,12 @@ function priorityText(priority) {
             </Transition>
           </section>
 
-          <section class="property-item" :class="{ expanded: expandedDetailSection === 'due' }">
+          <section class="property-item due-item" :class="{ expanded: expandedDetailSection === 'due' }">
             <button class="property-trigger" type="button" @click="toggleDetailSection('due')">
               <span class="property-icon due-icon"><CalendarDays :size="16" /></span>
               <span class="property-copy">
                 <small>截止时间</small>
-                <strong>
-                  {{ editForm.dueDate ? `${formatDateLabel(editForm.dueDate)} · ${formatTimeLabel(editForm.dueTime)}` : '未设置' }}
-                </strong>
+                <strong>{{ editDueLabel }}</strong>
               </span>
               <ChevronDown class="property-chevron" :size="17" />
             </button>
@@ -2172,7 +2401,7 @@ function priorityText(priority) {
             </button>
 
             <Transition name="property-reveal">
-              <div v-if="expandedDetailSection === 'activity'" class="property-editor activity-list">
+              <div v-if="expandedDetailSection === 'activity'" class="property-editor activity-list activity-inline-list">
                 <div>
                   <CalendarDays :size="15" />
                   <span>创建</span>

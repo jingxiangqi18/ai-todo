@@ -5,19 +5,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.openai.OpenAiChatOptions;
+import com.openai.errors.OpenAIException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientException;
 import org.springframework.web.server.ResponseStatusException;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.MediaType;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.qijx.aitodo.ai.dto.TaskAdviceResponse;
 import com.qijx.aitodo.task.entity.Task;
 import com.qijx.aitodo.task.entity.TaskStep;
@@ -42,28 +37,16 @@ public class AiAdviceService {
 
     private final TaskMapper taskMapper;
     private final TaskStepMapper taskStepMapper;
-    private final RestClient restClient;
-    private final ObjectMapper objectMapper;
-
-    private final String chatUrl;
-    private final String apiKey;
-    private final String model;
+    private final ChatClient chatClient;
 
     public AiAdviceService(
         TaskMapper taskMapper,
         TaskStepMapper taskStepMapper,
-        @Value("${app.llm.chat-url}") String chatUrl,
-        @Value("${app.llm.api-key}") String apiKey,
-        @Value("${app.llm.model}") String model
+        ChatClient.Builder chatClientBuilder
     ){
         this.taskMapper = taskMapper;
         this.taskStepMapper = taskStepMapper;
-        this.chatUrl = chatUrl;
-        this.apiKey = apiKey;
-        this.model = model;
-
-        this.restClient = RestClient.create();
-        this.objectMapper = new ObjectMapper();
+        this.chatClient = chatClientBuilder.build();
     }
 
     public TaskAdviceResponse generateAdvice(Long userId, String message){
@@ -100,57 +83,47 @@ public class AiAdviceService {
                     Collectors.groupingBy(TaskStep::getTaskId)
                 );
 
-        validateLlmConfiguration();
-
         String userPrompt = buildUserPrompt(
             message,
             tasks,
             stepsByTaskId
         );
 
-        Map<String, Object> requestBody = Map.of(
-            "model", model,
-            "messages", List.of(
-                Map.of(
-                    "role", "system",
-                    "content", SYSTEM_PROMPT
-                ),
-                Map.of(
-                    "role", "user",
-                    "content", userPrompt
-                )
-            ),
-            "thinking", Map.of(
-                "type", "disabled"
-            ),
-            "stream", false
-        );
+        OpenAiChatOptions.Builder chatOptions = 
+            OpenAiChatOptions.builder()
+                .maxTokens(400)
+                .extraBody(
+                    Map.of(
+                        "thinking",
+                        Map.of(
+                            "type",
+                            "disabled"
+                        )
+                    )
+                );
+
+        String advice;
 
         try{
-            String requestJson = objectMapper.writeValueAsString(requestBody);
-
-            String responseJson = restClient.post()
-                .uri(chatUrl)
-                .header(
-                    HttpHeaders.AUTHORIZATION,
-                    "Bearer " + apiKey
-                )
-                .contentType(MediaType.APPLICATION_JSON)
-                .body(requestJson)
-                .retrieve()
-                .body(String.class);
-
-            String advice = extractAdvice(responseJson);
-
-            return createResponse(advice);
-        }catch(RestClientException exception){
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "调用AI服务失败");
-        }catch(JsonProcessingException exception){
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "处理AI服务数据失败");
+            advice = chatClient.prompt()
+                    .system(SYSTEM_PROMPT)
+                    .user(userPrompt)
+                    .options(chatOptions)
+                    .call()
+                    .content();
+            
+        }catch(OpenAIException exception){
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "调用AI服务失败", exception);
         }
+
+        if(advice == null || advice.isBlank()){
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务无返回内容");
+        }
+
+        return createResponse(advice);
     }
 
-    private String buildUserPrompt(
+        private String buildUserPrompt(
         String message,
         List<Task> tasks,
         Map<Long, List<TaskStep>> stepsByTaskId
@@ -201,35 +174,8 @@ public class AiAdviceService {
         return prompt.toString();
     }
 
-    private String extractAdvice(String responseJson) throws JsonProcessingException {
-        if(responseJson == null || responseJson.isBlank()){
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务无返回内容");
-        }
-
-        JsonNode rootNode = objectMapper.readTree(responseJson);
-
-        String advice = rootNode
-            .path("choices")
-            .path(0)
-            .path("message")
-            .path("content")
-            .asText();
-
-        if(advice.isBlank()){
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务返回内容格式有误");
-        }
-
-        return advice;
-    }
-
-    private void validateLlmConfiguration(){
-        if(chatUrl.isBlank() || apiKey.isBlank() || model.isBlank()){
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "LLM服务尚未配置");
-        }
-    }
-
-    private String valueOrDefault(Object value){
-        if(value == null){
+    private String valueOrDefault(Object value) {
+        if (value == null) {
             return "未设置";
         }
 
