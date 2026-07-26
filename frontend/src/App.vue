@@ -14,6 +14,7 @@ import {
   Clock3,
   Copy,
   Flag,
+  GripVertical,
   History,
   ListChecks,
   ListTodo,
@@ -38,6 +39,7 @@ import {
   createTask,
   deleteTaskStep,
   deleteTask,
+  generateTaskStepDrafts,
   getCurrentUser,
   getTask,
   getTaskAdvice,
@@ -63,6 +65,7 @@ const isBooting = ref(true)
 const isAuthSubmitting = ref(false)
 const isTaskSubmitting = ref(false)
 const isTaskListLoading = ref(false)
+const isCompletedGroupOpen = ref(true)
 const isDuePanelOpen = ref(false)
 const isComposerOpen = ref(false)
 const isFilterOpen = ref(false)
@@ -74,6 +77,13 @@ const expandedDetailSection = ref(null)
 const taskSteps = ref([])
 const taskStepStatsById = reactive(new Map())
 const stepDraft = ref('')
+const isAiStepDraftOpen = ref(false)
+const isAiStepDraftLoading = ref(false)
+const isAiStepDraftSaving = ref(false)
+const aiStepInstruction = ref('')
+const aiStepDrafts = ref([])
+const aiStepDraftError = ref('')
+const aiStepDraftMessage = ref('')
 const editingStepId = ref(null)
 const editingStepTitle = ref('')
 const stepDeleteCandidateId = ref(null)
@@ -94,9 +104,21 @@ const reminderMenuRef = ref(null)
 const dueMenuRef = ref(null)
 const detailPropertiesRef = ref(null)
 const aiMessageInputRef = ref(null)
+const DETAIL_PANEL_WIDTH_KEY = 'aiTodoDetailPanelWidth'
+const DETAIL_PANEL_DEFAULT_WIDTH = 520
+const DETAIL_PANEL_MIN_WIDTH = 360
+const DETAIL_PANEL_MAX_WIDTH = 760
+const detailPanelWidth = ref(readStoredDetailPanelWidth())
+const detailPanelBounds = reactive({
+  min: DETAIL_PANEL_MIN_WIDTH,
+  max: DETAIL_PANEL_MAX_WIDTH
+})
+const isDetailResizing = ref(false)
 let searchTimer
 let aiCopyTimer
 let taskStepStatsRequestId = 0
+let detailResizeStartX = 0
+let detailResizeStartWidth = 0
 
 const vFocus = {
   mounted(element) {
@@ -200,6 +222,13 @@ const taskStepProgress = computed(() => {
 
   return Math.round((completedStepCount.value / taskSteps.value.length) * 100)
 })
+const selectedAiStepDrafts = computed(() => aiStepDrafts.value.filter((draft) => draft.selected))
+const areAllAiStepDraftsSelected = computed(() => (
+  aiStepDrafts.value.length > 0 && selectedAiStepDrafts.value.length === aiStepDrafts.value.length
+))
+const canGenerateAiStepDraft = computed(() => (
+  !isAiStepDraftLoading.value && aiStepInstruction.value.length <= 500
+))
 const unfinishedTaskCount = computed(() => Math.max(0, taskStats.total - taskStats.done))
 const isAiMessageValid = computed(() => {
   const message = aiMessage.value.trim()
@@ -224,6 +253,12 @@ const aiPromptOptions = [
     prompt: '请综合截止时间、优先级和当前进度，帮我安排今天剩余时间要处理的任务。',
     icon: WandSparkles
   }
+]
+
+const aiStepInstructionPresets = [
+  '拆成 3 到 5 个最关键步骤',
+  '优先给出可以立即开始的步骤',
+  '每一步尽量控制在 30 分钟内'
 ]
 
 const priorityOptions = [
@@ -268,6 +303,44 @@ const doneTasks = computed(() => tasks.value.filter((task) => task.status === 'D
 const visibleTasks = computed(() => {
   const source = resolveViewTasks()
   return source
+})
+const shouldSeparateCompletedTasks = computed(() => (
+  activeView.value === 'all' && listFilters.status !== 'DONE'
+))
+const visibleTaskGroups = computed(() => {
+  if (!visibleTasks.value.length) {
+    return []
+  }
+
+  if (!shouldSeparateCompletedTasks.value) {
+    return [{
+      key: 'primary',
+      completed: false,
+      tasks: visibleTasks.value
+    }]
+  }
+
+  const pendingTasks = visibleTasks.value.filter((task) => task.status !== 'DONE')
+  const completedTasks = visibleTasks.value.filter((task) => task.status === 'DONE')
+  const groups = []
+
+  if (pendingTasks.length) {
+    groups.push({
+      key: 'pending',
+      completed: false,
+      tasks: pendingTasks
+    })
+  }
+
+  if (completedTasks.length) {
+    groups.push({
+      key: 'completed',
+      completed: true,
+      tasks: completedTasks
+    })
+  }
+
+  return groups
 })
 
 const currentView = computed(() => views.value.find((item) => item.key === activeView.value) || views.value[0])
@@ -334,6 +407,8 @@ watch(aiMessage, () => {
 onMounted(async () => {
   document.addEventListener('pointerdown', handleDocumentPointerDown)
   document.addEventListener('keydown', handleDocumentKeydown)
+  window.addEventListener('resize', updateDetailPanelBounds)
+  updateDetailPanelBounds()
 
   const token = localStorage.getItem('aiTodoToken')
 
@@ -356,10 +431,117 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', handleDocumentPointerDown)
   document.removeEventListener('keydown', handleDocumentKeydown)
+  window.removeEventListener('resize', updateDetailPanelBounds)
+  finishDetailResize()
   window.clearTimeout(searchTimer)
   window.clearTimeout(aiCopyTimer)
   document.body.classList.remove('modal-open')
 })
+
+function readStoredDetailPanelWidth() {
+  try {
+    const storedWidth = Number(localStorage.getItem(DETAIL_PANEL_WIDTH_KEY))
+
+    return Number.isFinite(storedWidth) && storedWidth > 0
+      ? storedWidth
+      : DETAIL_PANEL_DEFAULT_WIDTH
+  } catch {
+    return DETAIL_PANEL_DEFAULT_WIDTH
+  }
+}
+
+function updateDetailPanelBounds() {
+  const viewportWidth = window.innerWidth
+  const sidebarWidth = viewportWidth > 1240 ? 240 : viewportWidth > 900 ? 82 : 0
+  const minimumBoardWidth = viewportWidth > 1240 ? 500 : 0
+  const availableWidth = viewportWidth - sidebarWidth - minimumBoardWidth
+  const maximumWidth = Math.min(DETAIL_PANEL_MAX_WIDTH, Math.max(DETAIL_PANEL_MIN_WIDTH, availableWidth))
+
+  detailPanelBounds.min = Math.min(DETAIL_PANEL_MIN_WIDTH, maximumWidth)
+  detailPanelBounds.max = maximumWidth
+
+  if (viewportWidth > 680) {
+    detailPanelWidth.value = clampDetailPanelWidth(detailPanelWidth.value)
+  }
+}
+
+function clampDetailPanelWidth(width) {
+  return Math.min(detailPanelBounds.max, Math.max(detailPanelBounds.min, Math.round(width)))
+}
+
+function persistDetailPanelWidth() {
+  try {
+    localStorage.setItem(DETAIL_PANEL_WIDTH_KEY, String(detailPanelWidth.value))
+  } catch {
+    // The resize remains available even when browser storage is disabled.
+  }
+}
+
+function startDetailResize(event) {
+  if (window.innerWidth <= 680 || (event.pointerType === 'mouse' && event.button !== 0)) {
+    return
+  }
+
+  event.preventDefault()
+  updateDetailPanelBounds()
+  detailResizeStartX = event.clientX
+  detailResizeStartWidth = detailPanelWidth.value
+  isDetailResizing.value = true
+  document.body.classList.add('detail-resizing')
+  window.addEventListener('pointermove', handleDetailResize)
+  window.addEventListener('pointerup', finishDetailResize)
+  window.addEventListener('pointercancel', finishDetailResize)
+}
+
+function handleDetailResize(event) {
+  if (!isDetailResizing.value) {
+    return
+  }
+
+  detailPanelWidth.value = clampDetailPanelWidth(
+    detailResizeStartWidth + detailResizeStartX - event.clientX
+  )
+}
+
+function finishDetailResize() {
+  if (isDetailResizing.value) {
+    persistDetailPanelWidth()
+  }
+
+  isDetailResizing.value = false
+  document.body.classList.remove('detail-resizing')
+  window.removeEventListener('pointermove', handleDetailResize)
+  window.removeEventListener('pointerup', finishDetailResize)
+  window.removeEventListener('pointercancel', finishDetailResize)
+}
+
+function resetDetailPanelWidth() {
+  updateDetailPanelBounds()
+  detailPanelWidth.value = clampDetailPanelWidth(DETAIL_PANEL_DEFAULT_WIDTH)
+  persistDetailPanelWidth()
+}
+
+function handleDetailResizeKeydown(event) {
+  const resizeStep = event.shiftKey ? 64 : 24
+  let nextWidth = detailPanelWidth.value
+
+  if (event.key === 'ArrowLeft') {
+    nextWidth += resizeStep
+  } else if (event.key === 'ArrowRight') {
+    nextWidth -= resizeStep
+  } else if (event.key === 'Home') {
+    nextWidth = detailPanelBounds.min
+  } else if (event.key === 'End') {
+    nextWidth = detailPanelBounds.max
+  } else {
+    return
+  }
+
+  event.preventDefault()
+  updateDetailPanelBounds()
+  detailPanelWidth.value = clampDetailPanelWidth(nextWidth)
+  persistDetailPanelWidth()
+}
 
 function handleDocumentKeydown(event) {
   if (event.key === 'Escape' && isAiAdvisorOpen.value) {
@@ -994,6 +1176,7 @@ async function openTaskDetail(task) {
   expandedDetailSection.value = null
   taskSteps.value = []
   stepDraft.value = ''
+  resetAiStepDraft()
   stepPendingIds.clear()
   resetStepEditor()
   isReminderOpen.value = false
@@ -1178,6 +1361,7 @@ function closeTaskDetail() {
   expandedDetailSection.value = null
   taskSteps.value = []
   stepDraft.value = ''
+  resetAiStepDraft()
   stepPendingIds.clear()
   resetStepEditor()
   isDetailLoading.value = false
@@ -1337,6 +1521,173 @@ async function handleDeleteStep(step) {
   } finally {
     stepPendingIds.delete(step.id)
   }
+}
+
+function resetAiStepDraft() {
+  isAiStepDraftOpen.value = false
+  isAiStepDraftLoading.value = false
+  isAiStepDraftSaving.value = false
+  aiStepInstruction.value = ''
+  aiStepDrafts.value = []
+  aiStepDraftError.value = ''
+  aiStepDraftMessage.value = ''
+}
+
+function toggleAiStepDraftPanel() {
+  isAiStepDraftOpen.value = !isAiStepDraftOpen.value
+  aiStepDraftError.value = ''
+  aiStepDraftMessage.value = ''
+}
+
+function applyAiStepInstructionPreset(instruction) {
+  aiStepInstruction.value = instruction
+  aiStepDraftError.value = ''
+}
+
+async function handleGenerateAiStepDrafts() {
+  const taskId = selectedTask.value?.id
+  const instruction = aiStepInstruction.value.trim()
+
+  aiStepDraftError.value = ''
+  aiStepDraftMessage.value = ''
+
+  if (!taskId || isAiStepDraftLoading.value) {
+    return
+  }
+
+  if (instruction.length > 500) {
+    aiStepDraftError.value = '任务拆解要求不能超过 500 个字符。'
+    return
+  }
+
+  isAiStepDraftLoading.value = true
+
+  try {
+    const result = await generateTaskStepDrafts(taskId, {
+      instruction: instruction || null
+    })
+    const steps = Array.isArray(result?.steps) ? result.steps : []
+
+    if (!steps.length) {
+      throw new Error('AI 服务没有返回可用的步骤草稿。')
+    }
+
+    aiStepDrafts.value = steps.map((title, index) => ({
+      id: `${Date.now()}-${index}`,
+      title: String(title).trim(),
+      selected: true
+    }))
+  } catch (error) {
+    aiStepDrafts.value = []
+    aiStepDraftError.value = error.message || '生成步骤草稿失败。'
+  } finally {
+    isAiStepDraftLoading.value = false
+  }
+}
+
+function toggleAiStepDraft(draft) {
+  draft.selected = !draft.selected
+  aiStepDraftError.value = ''
+  aiStepDraftMessage.value = ''
+}
+
+function toggleAllAiStepDrafts() {
+  const nextSelected = !areAllAiStepDraftsSelected.value
+
+  aiStepDrafts.value.forEach((draft) => {
+    draft.selected = nextSelected
+  })
+}
+
+function removeAiStepDraft(draftId) {
+  aiStepDrafts.value = aiStepDrafts.value.filter((draft) => draft.id !== draftId)
+  aiStepDraftError.value = ''
+  aiStepDraftMessage.value = ''
+}
+
+async function handleSaveAiStepDrafts() {
+  const taskId = selectedTask.value?.id
+
+  aiStepDraftError.value = ''
+  aiStepDraftMessage.value = ''
+
+  if (!taskId || isAiStepDraftSaving.value) {
+    return
+  }
+
+  if (!selectedAiStepDrafts.value.length) {
+    aiStepDraftError.value = '请至少选择一个需要保存的步骤。'
+    return
+  }
+
+  const knownTitles = new Set(taskSteps.value.map((step) => step.title.trim().toLocaleLowerCase()))
+  const duplicateIds = new Set()
+  const candidates = []
+
+  for (const draft of selectedAiStepDrafts.value) {
+    const title = draft.title.trim()
+    const normalizedTitle = title.toLocaleLowerCase()
+
+    if (!title || title.length > 100) {
+      aiStepDraftError.value = '步骤标题不能为空，且不能超过 100 个字符。'
+      return
+    }
+
+    if (knownTitles.has(normalizedTitle)) {
+      duplicateIds.add(draft.id)
+      continue
+    }
+
+    knownTitles.add(normalizedTitle)
+    candidates.push({ ...draft, title })
+  }
+
+  if (!candidates.length) {
+    aiStepDrafts.value.forEach((draft) => {
+      if (duplicateIds.has(draft.id)) {
+        draft.selected = false
+      }
+    })
+    aiStepDraftError.value = '选中的草稿与现有步骤重复，请调整后再保存。'
+    return
+  }
+
+  isAiStepDraftSaving.value = true
+  const savedDraftIds = new Set()
+  const createdSteps = []
+  let saveError = null
+
+  for (const draft of candidates) {
+    try {
+      createdSteps.push(await createTaskStep(taskId, { title: draft.title }))
+      savedDraftIds.add(draft.id)
+    } catch (error) {
+      saveError = error
+      break
+    }
+  }
+
+  if (selectedTask.value?.id === taskId && createdSteps.length) {
+    taskSteps.value = [...taskSteps.value, ...createdSteps]
+    syncTaskStepStats(taskId, taskSteps.value)
+  } else if (createdSteps.length) {
+    void refreshTaskStepStats([{ id: taskId }])
+  }
+
+  aiStepDrafts.value = aiStepDrafts.value
+    .filter((draft) => !savedDraftIds.has(draft.id))
+    .map((draft) => duplicateIds.has(draft.id) ? { ...draft, selected: false } : draft)
+
+  if (createdSteps.length) {
+    const duplicateText = duplicateIds.size ? `，另有 ${duplicateIds.size} 条重复草稿已取消选择` : ''
+    aiStepDraftMessage.value = `已加入 ${createdSteps.length} 个执行步骤${duplicateText}。`
+  }
+
+  if (saveError) {
+    aiStepDraftError.value = saveError.message || '部分步骤保存失败，请重试。'
+  }
+
+  isAiStepDraftSaving.value = false
 }
 
 async function openAiAdvisor() {
@@ -1606,7 +1957,12 @@ function priorityText(priority) {
     </section>
   </main>
 
-  <main v-else class="todo-app" :class="{ 'has-detail': selectedTask }">
+  <main
+    v-else
+    class="todo-app"
+    :class="{ 'has-detail': selectedTask, 'is-detail-resizing': isDetailResizing }"
+    :style="{ '--detail-panel-width': `${detailPanelWidth}px` }"
+  >
     <button
       v-if="isSidebarOpen"
       class="sidebar-backdrop"
@@ -1790,80 +2146,111 @@ function priorityText(priority) {
         <span>{{ errorMessage }}</span>
         <button type="button" @click="refreshTasks">重试</button>
       </div>
-      <div class="task-list">
-        <div v-if="!isTaskListLoading && visibleTasks.length" class="task-list-columns" aria-hidden="true">
-          <span></span>
-          <span>任务</span>
-          <span>执行进度</span>
-          <span>截止时间</span>
-        </div>
-
-        <template v-if="isTaskListLoading">
-          <div v-for="index in 5" :key="index" class="task-skeleton" aria-hidden="true">
+      <div v-if="isTaskListLoading" class="task-list">
+        <template v-for="index in 5" :key="index">
+          <div class="task-skeleton" aria-hidden="true">
             <span></span>
             <div><i></i><i></i></div>
             <em></em>
           </div>
         </template>
+      </div>
 
-        <article
-          v-for="task in isTaskListLoading ? [] : visibleTasks"
-          :key="task.id"
-          class="task-item"
-          :class="{ selected: selectedTask?.id === task.id, done: task.status === 'DONE' }"
-          tabindex="0"
-          @click="openTaskDetail(task)"
-          @keydown.enter="openTaskDetail(task)"
+      <div v-else-if="visibleTasks.length" class="task-groups">
+        <section
+          v-for="group in visibleTaskGroups"
+          :key="group.key"
+          class="task-group"
+          :class="{ 'completed-task-group': group.completed }"
         >
           <button
-            class="task-check"
+            v-if="group.completed"
+            class="completed-group-toggle"
             type="button"
-            :class="{ done: task.status === 'DONE' }"
-            :aria-label="task.status === 'DONE' ? '恢复任务' : '完成任务'"
-            @click.stop="toggleTaskDone(task)"
+            :aria-expanded="isCompletedGroupOpen"
+            @click="isCompletedGroupOpen = !isCompletedGroupOpen"
           >
-            <Check v-if="task.status === 'DONE'" :size="14" />
+            <ChevronRight class="completed-group-chevron" :class="{ open: isCompletedGroupOpen }" :size="17" />
+            <span>已完成</span>
+            <b>{{ group.tasks.length }}</b>
           </button>
-          <div class="task-content">
-            <div class="task-title-row">
-              <h2>{{ task.title }}</h2>
-            </div>
-          </div>
-          <div
-            class="task-step-summary"
-            :class="{
-              loading: getTaskStepStats(task.id).loading,
-              unavailable: getTaskStepStats(task.id).error,
-              complete: getTaskStepStats(task.id).progress === 100
-            }"
-          >
-            <div class="task-step-copy">
-              <ListChecks :size="13" />
-              <span>{{ taskStepListLabel(task.id) }}</span>
-              <b v-if="!getTaskStepStats(task.id).loading && !getTaskStepStats(task.id).error">
-                {{ getTaskStepStats(task.id).progress }}%
-              </b>
-            </div>
-            <div
-              class="task-step-track"
-              role="progressbar"
-              :aria-label="`${task.title}的步骤完成进度`"
-              :aria-valuenow="getTaskStepStats(task.id).progress"
-              aria-valuemin="0"
-              aria-valuemax="100"
-            >
-              <span :style="{ width: `${getTaskStepStats(task.id).progress}%` }"></span>
-            </div>
-          </div>
-          <div class="task-meta">
-            <span v-if="task.dueAt" class="task-due" :class="{ overdue: isTaskOverdue(task) }">
-              <CalendarDays :size="14" />
-              {{ formatDueAt(task.dueAt) }}
-            </span>
-          </div>
-        </article>
 
-        <section v-if="!isTaskListLoading && visibleTasks.length === 0" class="empty-panel">
+          <Transition name="completed-list">
+            <div
+              v-show="!group.completed || isCompletedGroupOpen"
+              class="task-list"
+              :class="{ 'completed-task-list': group.completed }"
+            >
+              <div v-if="!group.completed" class="task-list-columns" aria-hidden="true">
+                <span></span>
+                <span>任务</span>
+                <span>执行进度</span>
+                <span>截止时间</span>
+              </div>
+
+              <article
+                v-for="task in group.tasks"
+                :key="task.id"
+                class="task-item"
+                :class="{ selected: selectedTask?.id === task.id, done: task.status === 'DONE' }"
+                tabindex="0"
+                @click="openTaskDetail(task)"
+                @keydown.enter="openTaskDetail(task)"
+              >
+                <button
+                  class="task-check"
+                  type="button"
+                  :class="{ done: task.status === 'DONE' }"
+                  :aria-label="task.status === 'DONE' ? '恢复任务' : '完成任务'"
+                  @click.stop="toggleTaskDone(task)"
+                >
+                  <Check v-if="task.status === 'DONE'" :size="14" />
+                </button>
+                <div class="task-content">
+                  <div class="task-title-row">
+                    <h2>{{ task.title }}</h2>
+                  </div>
+                </div>
+                <div
+                  class="task-step-summary"
+                  :class="{
+                    loading: getTaskStepStats(task.id).loading,
+                    unavailable: getTaskStepStats(task.id).error,
+                    complete: getTaskStepStats(task.id).progress === 100
+                  }"
+                >
+                  <div class="task-step-copy">
+                    <ListChecks :size="13" />
+                    <span>{{ taskStepListLabel(task.id) }}</span>
+                    <b v-if="!getTaskStepStats(task.id).loading && !getTaskStepStats(task.id).error">
+                      {{ getTaskStepStats(task.id).progress }}%
+                    </b>
+                  </div>
+                  <div
+                    class="task-step-track"
+                    role="progressbar"
+                    :aria-label="`${task.title}的步骤完成进度`"
+                    :aria-valuenow="getTaskStepStats(task.id).progress"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                  >
+                    <span :style="{ width: `${getTaskStepStats(task.id).progress}%` }"></span>
+                  </div>
+                </div>
+                <div class="task-meta">
+                  <span v-if="task.dueAt" class="task-due" :class="{ overdue: isTaskOverdue(task) }">
+                    <CalendarDays :size="14" />
+                    {{ formatDueAt(task.dueAt) }}
+                  </span>
+                </div>
+              </article>
+            </div>
+          </Transition>
+        </section>
+      </div>
+
+      <div v-else class="task-list">
+        <section class="empty-panel">
           <ListTodo :size="34" />
           <h2>{{ emptyState.title }}</h2>
           <p>{{ emptyState.description }}</p>
@@ -2097,19 +2484,38 @@ function priorityText(priority) {
     </section>
 
     <aside v-if="selectedTask" class="detail-panel">
-      <header class="detail-header">
-        <div class="detail-heading-copy">
-          <p>任务详情</p>
-          <span>整理任务的关键信息</span>
-        </div>
-        <button type="button" class="icon-button" aria-label="关闭详情" @click="closeTaskDetail">
-          <X :size="18" />
-        </button>
-      </header>
+      <div
+        class="detail-resize-handle"
+        role="separator"
+        aria-label="调整任务详情宽度"
+        aria-orientation="vertical"
+        :aria-valuemin="detailPanelBounds.min"
+        :aria-valuemax="detailPanelBounds.max"
+        :aria-valuenow="detailPanelWidth"
+        tabindex="0"
+        title="拖动调整详情宽度，双击恢复默认"
+        @pointerdown="startDetailResize"
+        @dblclick="resetDetailPanelWidth"
+        @keydown="handleDetailResizeKeydown"
+      >
+        <GripVertical :size="15" />
+        <span v-if="isDetailResizing">{{ detailPanelWidth }} px</span>
+      </div>
 
-      <p v-if="detailError" class="notice error">{{ detailError }}</p>
+      <div class="detail-panel-scroll">
+        <header class="detail-header">
+          <div class="detail-heading-copy">
+            <p>任务详情</p>
+            <span>整理任务的关键信息</span>
+          </div>
+          <button type="button" class="icon-button" aria-label="关闭详情" @click="closeTaskDetail">
+            <X :size="18" />
+          </button>
+        </header>
 
-      <form class="detail-form" @submit.prevent="handleUpdateTask">
+        <p v-if="detailError" class="notice error">{{ detailError }}</p>
+
+        <form class="detail-form" @submit.prevent="handleUpdateTask">
         <label class="detail-title-field">
           <span>标题</span>
           <input v-model="editForm.title" type="text" maxlength="100" />
@@ -2141,8 +2547,119 @@ function priorityText(priority) {
                 <small>执行步骤</small>
                 <strong>{{ taskStepSummary }}</strong>
               </span>
-              <span v-if="taskSteps.length" class="step-count">{{ taskStepProgress }}%</span>
+              <div class="steps-heading-actions">
+                <span v-if="taskSteps.length" class="step-count">{{ taskStepProgress }}%</span>
+                <button
+                  class="ai-step-trigger"
+                  type="button"
+                  title="AI 拆解任务"
+                  :class="{ active: isAiStepDraftOpen }"
+                  :aria-expanded="isAiStepDraftOpen"
+                  @click="toggleAiStepDraftPanel"
+                >
+                  <Sparkles :size="14" />
+                  <span>AI 拆解</span>
+                </button>
+              </div>
             </div>
+
+            <Transition name="property-reveal">
+              <section v-if="isAiStepDraftOpen" class="ai-step-draft-panel" aria-label="AI 步骤草稿">
+                <header class="ai-step-draft-header">
+                  <div>
+                    <small>AI STEP DRAFTS</small>
+                    <strong>生成执行步骤</strong>
+                  </div>
+                  <button type="button" aria-label="关闭 AI 步骤草稿" title="关闭" @click="isAiStepDraftOpen = false">
+                    <X :size="15" />
+                  </button>
+                </header>
+
+                <form class="ai-step-draft-form" @submit.prevent="handleGenerateAiStepDrafts">
+                  <div class="ai-step-presets" aria-label="拆解要求快捷选项">
+                    <button
+                      v-for="preset in aiStepInstructionPresets"
+                      :key="preset"
+                      type="button"
+                      :class="{ active: aiStepInstruction === preset }"
+                      @click="applyAiStepInstructionPreset(preset)"
+                    >
+                      {{ preset }}
+                    </button>
+                  </div>
+
+                  <label class="ai-step-instruction">
+                    <textarea
+                      v-model="aiStepInstruction"
+                      maxlength="500"
+                      rows="2"
+                      placeholder="补充拆解要求（可选）"
+                      @input="aiStepDraftError = ''; aiStepDraftMessage = ''"
+                    ></textarea>
+                    <span :class="{ over: aiStepInstruction.length > 500 }">{{ aiStepInstruction.length }} / 500</span>
+                  </label>
+
+                  <button
+                    class="ai-step-generate"
+                    type="submit"
+                    :class="{ loading: isAiStepDraftLoading }"
+                    :disabled="!canGenerateAiStepDraft"
+                  >
+                    <RefreshCw v-if="isAiStepDraftLoading" :size="14" />
+                    <WandSparkles v-else :size="14" />
+                    <span>{{ isAiStepDraftLoading ? '生成中...' : aiStepDrafts.length ? '重新生成' : '生成草稿' }}</span>
+                  </button>
+                </form>
+
+                <div v-if="isAiStepDraftLoading" class="ai-step-draft-loading" role="status">
+                  <span v-for="index in 3" :key="index"></span>
+                </div>
+
+                <div v-else-if="aiStepDrafts.length" class="ai-step-draft-list">
+                  <div v-for="(draft, index) in aiStepDrafts" :key="draft.id" class="ai-step-draft-row">
+                    <button
+                      class="ai-step-draft-check"
+                      type="button"
+                      :class="{ selected: draft.selected }"
+                      :aria-label="draft.selected ? `取消选择步骤 ${index + 1}` : `选择步骤 ${index + 1}`"
+                      @click="toggleAiStepDraft(draft)"
+                    >
+                      <Check v-if="draft.selected" :size="12" />
+                      <span v-else>{{ index + 1 }}</span>
+                    </button>
+                    <input
+                      v-model="draft.title"
+                      type="text"
+                      maxlength="100"
+                      :aria-label="`步骤草稿 ${index + 1}`"
+                      @input="aiStepDraftError = ''; aiStepDraftMessage = ''"
+                    />
+                    <button type="button" aria-label="移除草稿" title="移除" @click="removeAiStepDraft(draft.id)">
+                      <X :size="14" />
+                    </button>
+                  </div>
+                </div>
+
+                <p v-if="aiStepDraftError" class="ai-step-feedback error" role="alert">{{ aiStepDraftError }}</p>
+                <p v-if="aiStepDraftMessage" class="ai-step-feedback success" role="status">{{ aiStepDraftMessage }}</p>
+
+                <footer v-if="aiStepDrafts.length" class="ai-step-draft-footer">
+                  <button type="button" class="ai-step-select-all" @click="toggleAllAiStepDrafts">
+                    <Check :size="13" />
+                    <span>{{ areAllAiStepDraftsSelected ? '取消全选' : '选择全部' }}</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="ai-step-save"
+                    :disabled="isAiStepDraftSaving || !selectedAiStepDrafts.length"
+                    @click="handleSaveAiStepDrafts"
+                  >
+                    <Plus :size="14" />
+                    <span>{{ isAiStepDraftSaving ? '添加中...' : `添加选中 ${selectedAiStepDrafts.length} 项` }}</span>
+                  </button>
+                </footer>
+              </section>
+            </Transition>
 
             <div class="property-editor steps-editor">
                 <div v-if="taskSteps.length" class="steps-progress" aria-hidden="true">
@@ -2427,7 +2944,8 @@ function priorityText(priority) {
             <Trash2 :size="17" />
           </button>
         </div>
-      </form>
+        </form>
+      </div>
     </aside>
   </main>
 </template>

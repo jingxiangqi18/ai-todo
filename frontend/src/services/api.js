@@ -146,6 +146,7 @@ function fallbackStatusMessage(status) {
     405: '当前操作暂不受支持。',
     429: '操作过于频繁，请稍后再试。',
     500: '服务器处理失败，请稍后重试。',
+    502: 'AI 服务暂时没有返回有效结果，请稍后重试。',
     503: '服务暂时不可用，请稍后重试。'
   }
 
@@ -265,6 +266,13 @@ export function deleteTaskStep(taskId, stepId) {
 
 export function getTaskAdvice(payload) {
   return request('/ai/task-advice', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function generateTaskStepDrafts(taskId, payload) {
+  return request(`/ai/tasks/${taskId}/step-drafts`, {
     method: 'POST',
     body: JSON.stringify(payload)
   })

@@ -16,7 +16,6 @@ import com.qijx.aitodo.task.dto.TaskPageResponse;
 import com.qijx.aitodo.task.dto.TaskResponse;
 import com.qijx.aitodo.task.dto.TaskStatsResponse;
 import com.qijx.aitodo.task.dto.TaskStatusUpdateRequest;
-import com.qijx.aitodo.task.dto.TaskStepResponse;
 import com.qijx.aitodo.task.dto.TaskUpdateRequest;
 import com.qijx.aitodo.task.entity.Task;
 import com.qijx.aitodo.task.mapper.TaskMapper;
