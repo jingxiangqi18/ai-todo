@@ -36,23 +36,15 @@ public class JwtService {
                 .sign(Algorithm.HMAC256(secret));
     }
 
-    private Long parseUserId(String token){
+    public Long parseUserId(String token){
         try{
             JWTVerifier verifier = JWT.require(Algorithm.HMAC256(secret)).build();
+
             DecodedJWT decodedJWT = verifier.verify(token);
+
             return Long.valueOf(decodedJWT.getSubject());
         }catch(JWTVerificationException | NumberFormatException e){
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "无效或已过期的登录凭证");
         }
-    }
-
-    public Long parseUserIdFromAuthorizationHeader(String authorizationHeader){
-        if(authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")){
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "缺少登陆凭证");
-        }
-
-        String token = authorizationHeader.substring(7);
-
-        return parseUserId(token);
     }
 }

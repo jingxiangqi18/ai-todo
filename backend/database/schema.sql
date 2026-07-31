@@ -5,7 +5,7 @@ CREATE TABLE users(
     password_hash VARCHAR(100) NOT NULL,
     status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
     created_at DATETIME NOT NULL,
-    update_at DATETIME NOT NULL
+    updated_at DATETIME NOT NULL
 );
 
 CREATE TABLE tasks(

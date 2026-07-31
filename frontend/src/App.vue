@@ -66,12 +66,15 @@ const isAuthSubmitting = ref(false)
 const isTaskSubmitting = ref(false)
 const isTaskListLoading = ref(false)
 const isCompletedGroupOpen = ref(true)
-const isDuePanelOpen = ref(false)
 const isComposerOpen = ref(false)
 const isFilterOpen = ref(false)
 const isReminderOpen = ref(false)
 const isSidebarOpen = ref(false)
 const isAiAdvisorOpen = ref(false)
+const deleteCandidate = ref(null)
+const isLogoutConfirmOpen = ref(false)
+const isTaskDeleting = ref(false)
+const deleteDialogError = ref('')
 const selectedTask = ref(null)
 const expandedDetailSection = ref(null)
 const taskSteps = ref([])
@@ -88,6 +91,7 @@ const editingStepId = ref(null)
 const editingStepTitle = ref('')
 const stepDeleteCandidateId = ref(null)
 const reminders = ref([])
+const allTasksSnapshot = ref([])
 const detailError = ref('')
 const isDetailLoading = ref(false)
 const isDetailSaving = ref(false)
@@ -101,9 +105,9 @@ const aiCopied = ref(false)
 const stepPendingIds = reactive(new Set())
 const filterMenuRef = ref(null)
 const reminderMenuRef = ref(null)
-const dueMenuRef = ref(null)
 const detailPropertiesRef = ref(null)
 const aiMessageInputRef = ref(null)
+const deleteCancelButtonRef = ref(null)
 const DETAIL_PANEL_WIDTH_KEY = 'aiTodoDetailPanelWidth'
 const DETAIL_PANEL_DEFAULT_WIDTH = 520
 const DETAIL_PANEL_MIN_WIDTH = 360
@@ -117,6 +121,7 @@ const isDetailResizing = ref(false)
 let searchTimer
 let aiCopyTimer
 let taskStepStatsRequestId = 0
+let createStepDraftId = 0
 let detailResizeStartX = 0
 let detailResizeStartWidth = 0
 
@@ -137,10 +142,22 @@ const authForm = reactive({
 const taskForm = reactive({
   title: '',
   description: '',
+  status: 'TODO',
   priority: 'MEDIUM',
   dueDate: '',
   dueTime: ''
 })
+
+const createDueParts = reactive({
+  year: '',
+  month: '',
+  day: '',
+  hour: '',
+  minute: ''
+})
+const composerError = ref('')
+const createStepDraft = ref('')
+const createStepDrafts = ref([])
 
 const editForm = reactive({
   title: '',
@@ -185,6 +202,29 @@ const editDateParts = computed(() => ({
   month: editDueParts.month,
   day: editDueParts.day
 }))
+const createDateParts = computed(() => ({
+  year: createDueParts.year,
+  month: createDueParts.month,
+  day: createDueParts.day
+}))
+const createTimeParts = computed(() => ({
+  hour: createDueParts.hour,
+  minute: createDueParts.minute
+}))
+const hasCreateDueValue = computed(() => Object.values(createDueParts).some(Boolean))
+const createDueLabel = computed(() => {
+  const due = resolveCreateDueValues()
+
+  if (due.error) {
+    return '日期或时间填写中'
+  }
+
+  if (!due.date) {
+    return '未设置截止时间'
+  }
+
+  return `${formatDateLabel(due.date)} · ${formatTimeLabel(due.time)}`
+})
 const editTimeParts = computed(() => ({
   hour: editDueParts.hour,
   minute: editDueParts.minute
@@ -273,37 +313,27 @@ const statusOptions = [
   { value: 'DONE', label: '已完成' }
 ]
 
-const dueButtonLabel = computed(() => {
-  if (!taskForm.dueDate) {
-    return '设置时间'
-  }
-
-  const time = taskForm.dueTime || '23:59'
-
-  return `${formatShortDate(taskForm.dueDate)} ${time}`
-})
+const activeTaskSnapshot = computed(() => allTasksSnapshot.value.filter((task) => task.status !== 'DONE'))
+const todayTaskSnapshot = computed(() => activeTaskSnapshot.value.filter(isTaskDueToday))
+const plannedTaskSnapshot = computed(() => activeTaskSnapshot.value.filter((task) => Boolean(task.dueAt)))
+const importantTaskSnapshot = computed(() => activeTaskSnapshot.value.filter((task) => task.priority === 'HIGH'))
+const inProgressTaskSnapshot = computed(() => allTasksSnapshot.value.filter((task) => task.status === 'IN_PROGRESS'))
+const doneTaskSnapshot = computed(() => allTasksSnapshot.value.filter((task) => task.status === 'DONE'))
 
 const views = computed(() => [
-  { key: 'all', label: '全部任务', icon: ListTodo, count: taskStats.total },
-  { key: 'today', label: '我的一天', icon: Sparkles, count: taskStats.dueToday },
-  { key: 'planned', label: '计划内', icon: CalendarDays, count: Math.max(0, taskStats.total - taskStats.done) },
-  { key: 'important', label: '重要', icon: Star, count: taskStats.highPriority },
-  { key: 'progress', label: '进行中', icon: RefreshCw, count: taskStats.inProgress },
-  { key: 'done', label: '已完成', icon: Check, count: taskStats.done }
+  { key: 'all', label: '全部任务', icon: ListTodo, count: allTasksSnapshot.value.length },
+  { key: 'today', label: '我的一天', icon: Sparkles, count: todayTaskSnapshot.value.length },
+  { key: 'planned', label: '计划内', icon: CalendarDays, count: plannedTaskSnapshot.value.length },
+  { key: 'important', label: '重要', icon: Star, count: importantTaskSnapshot.value.length },
+  { key: 'progress', label: '进行中', icon: RefreshCw, count: inProgressTaskSnapshot.value.length },
+  { key: 'done', label: '已完成', icon: Check, count: doneTaskSnapshot.value.length }
 ])
 
 const todayKey = computed(() => toLocalDateKey(new Date()))
-const activeTasks = computed(() => tasks.value.filter((task) => task.status !== 'DONE'))
-const todayTasks = computed(() => activeTasks.value.filter((task) => formatDateKey(task.dueAt) === todayKey.value))
-const plannedTasks = computed(() => activeTasks.value.filter((task) => Boolean(task.dueAt)))
-const importantTasks = computed(() => activeTasks.value.filter((task) => task.priority === 'HIGH'))
-const inProgressTasks = computed(() => tasks.value.filter((task) => task.status === 'IN_PROGRESS'))
-const doneTasks = computed(() => tasks.value.filter((task) => task.status === 'DONE'))
-
-const visibleTasks = computed(() => {
-  const source = resolveViewTasks()
-  return source
-})
+const currentViewTaskSnapshot = computed(() => filterTasksForCurrentView(allTasksSnapshot.value))
+const currentViewStats = computed(() => createTaskStats(currentViewTaskSnapshot.value))
+const visibleTasks = computed(() => tasks.value)
+const isConfirmationDialogOpen = computed(() => Boolean(deleteCandidate.value) || isLogoutConfirmOpen.value)
 const shouldSeparateCompletedTasks = computed(() => (
   activeView.value === 'all' && listFilters.status !== 'DONE'
 ))
@@ -544,8 +574,57 @@ function handleDetailResizeKeydown(event) {
 }
 
 function handleDocumentKeydown(event) {
-  if (event.key === 'Escape' && isAiAdvisorOpen.value) {
+  if (event.key !== 'Escape') {
+    return
+  }
+
+  if (isConfirmationDialogOpen.value) {
+    closeConfirmationDialog()
+    return
+  }
+
+  if (isAiAdvisorOpen.value) {
     closeAiAdvisor()
+    return
+  }
+
+  if (isComposerOpen.value && !isTaskSubmitting.value) {
+    closeComposer()
+    return
+  }
+
+  if (selectedTask.value) {
+    closeTaskDetail()
+  }
+}
+
+function syncBodyModalState() {
+  document.body.classList.toggle(
+    'modal-open',
+    isAiAdvisorOpen.value || isConfirmationDialogOpen.value
+  )
+}
+
+function handleDeleteDialogKeydown(event) {
+  if (event.key !== 'Tab') {
+    return
+  }
+
+  const buttons = [...event.currentTarget.querySelectorAll('button:not(:disabled)')]
+
+  if (!buttons.length) {
+    return
+  }
+
+  const firstButton = buttons[0]
+  const lastButton = buttons[buttons.length - 1]
+
+  if (event.shiftKey && document.activeElement === firstButton) {
+    event.preventDefault()
+    lastButton.focus()
+  } else if (!event.shiftKey && document.activeElement === lastButton) {
+    event.preventDefault()
+    firstButton.focus()
   }
 }
 
@@ -558,10 +637,6 @@ function handleDocumentPointerDown(event) {
 
   if (isReminderOpen.value && reminderMenuRef.value && !path.includes(reminderMenuRef.value)) {
     isReminderOpen.value = false
-  }
-
-  if (isDuePanelOpen.value && dueMenuRef.value && !path.includes(dueMenuRef.value)) {
-    isDuePanelOpen.value = false
   }
 
   if (expandedDetailSection.value && detailPropertiesRef.value && !path.includes(detailPropertiesRef.value)) {
@@ -611,14 +686,41 @@ async function handleAuthSubmit() {
 }
 
 async function handleCreateTask() {
+  composerError.value = ''
   errorMessage.value = ''
   successMessage.value = ''
 
   if (!isTaskValid.value) {
-    errorMessage.value = '任务标题不能为空，且不能超过 100 个字符。'
+    composerError.value = '任务标题不能为空，且不能超过 100 个字符。'
     return
   }
 
+  const due = resolveCreateDueValues()
+
+  if (due.error) {
+    composerError.value = due.error
+    return
+  }
+
+  const pendingStepTitle = createStepDraft.value.trim()
+
+  if (pendingStepTitle.length > 100) {
+    composerError.value = '执行步骤不能超过 100 个字符。'
+    return
+  }
+
+  if (pendingStepTitle && createStepDrafts.value.some((step) => (
+    step.title.toLocaleLowerCase() === pendingStepTitle.toLocaleLowerCase()
+  ))) {
+    composerError.value = '这个执行步骤已经添加过了。'
+    return
+  }
+
+  const requestedStatus = taskForm.status
+  const stepTitles = [
+    ...createStepDrafts.value.map((step) => step.title),
+    ...(pendingStepTitle ? [pendingStepTitle] : [])
+  ]
   isTaskSubmitting.value = true
 
   try {
@@ -626,26 +728,145 @@ async function handleCreateTask() {
       title: taskForm.title.trim(),
       description: taskForm.description.trim() || null,
       priority: taskForm.priority,
-      dueAt: resolveDueAt()
+      dueAt: due.date ? `${due.date}T${due.time}` : null
     })
 
-    tasks.value = [created, ...tasks.value]
-    syncTaskStepStats(created.id, [])
-    taskPage.total += 1
-    taskPage.pages = Math.max(1, Math.ceil(taskPage.total / taskPage.size))
-    taskForm.title = ''
-    taskForm.description = ''
-    taskForm.priority = 'MEDIUM'
-    taskForm.dueDate = ''
-    taskForm.dueTime = ''
-    isDuePanelOpen.value = false
+    const followUpRequests = [
+      ...(requestedStatus !== 'TODO'
+        ? [{ type: 'status', request: updateTaskStatus(created.id, { status: requestedStatus }) }]
+        : []),
+      ...stepTitles.map((title) => ({
+        type: 'step',
+        request: createTaskStep(created.id, { title })
+      }))
+    ]
+    const followUpResults = await Promise.allSettled(followUpRequests.map((item) => item.request))
+    const createdSteps = followUpResults
+      .map((result, index) => ({ result, type: followUpRequests[index].type }))
+      .filter(({ result, type }) => type === 'step' && result.status === 'fulfilled')
+      .map(({ result }) => result.value)
+    const failedStatus = followUpResults.some((result, index) => (
+      followUpRequests[index].type === 'status' && result.status === 'rejected'
+    ))
+    const failedStepCount = followUpResults.filter((result, index) => (
+      followUpRequests[index].type === 'step' && result.status === 'rejected'
+    )).length
+
+    syncTaskStepStats(created.id, createdSteps)
+    resetTaskForm()
     isComposerOpen.value = false
-    await refreshTaskStats()
-    await refreshTaskReminders()
+    taskPage.page = 1
+    await refreshTasks()
+
+    if (failedStatus || failedStepCount) {
+      const failures = [
+        ...(failedStatus ? ['状态'] : []),
+        ...(failedStepCount ? [`${failedStepCount} 个执行步骤`] : [])
+      ]
+      errorMessage.value = `任务已创建，但${failures.join('和')}未保存，请打开任务后补充。`
+    }
   } catch (error) {
-    errorMessage.value = error.message || '创建任务失败。'
+    composerError.value = error.message || '创建任务失败。'
   } finally {
     isTaskSubmitting.value = false
+  }
+}
+
+async function fetchAllTaskRecords() {
+  const pageSize = 50
+  const firstPage = await listTasks({ page: 1, size: pageSize })
+
+  if (Array.isArray(firstPage)) {
+    return firstPage
+  }
+
+  const records = [...(firstPage.records || [])]
+  const pages = Math.max(1, Number(firstPage.pages) || 1)
+
+  for (let page = 2; page <= pages; page += 1) {
+    const result = await listTasks({ page, size: pageSize })
+    records.push(...(Array.isArray(result) ? result : result.records || []))
+  }
+
+  return records
+}
+
+function filterTasksForCurrentView(source) {
+  let filtered = [...source]
+
+  if (activeView.value === 'today') {
+    filtered = filtered.filter((task) => task.status !== 'DONE' && isTaskDueToday(task))
+  } else if (activeView.value === 'planned') {
+    filtered = filtered.filter((task) => task.status !== 'DONE' && Boolean(task.dueAt))
+  } else if (activeView.value === 'important') {
+    filtered = filtered.filter((task) => task.status !== 'DONE' && task.priority === 'HIGH')
+  } else if (activeView.value === 'progress') {
+    filtered = filtered.filter((task) => task.status === 'IN_PROGRESS')
+  } else if (activeView.value === 'done') {
+    filtered = filtered.filter((task) => task.status === 'DONE')
+  }
+
+  if (listFilters.status) {
+    filtered = filtered.filter((task) => task.status === listFilters.status)
+  }
+
+  if (listFilters.priority) {
+    filtered = filtered.filter((task) => task.priority === listFilters.priority)
+  }
+
+  const keyword = query.value.trim().toLocaleLowerCase()
+
+  if (keyword) {
+    filtered = filtered.filter((task) => (
+      task.title?.toLocaleLowerCase().includes(keyword) ||
+      task.description?.toLocaleLowerCase().includes(keyword)
+    ))
+  }
+
+  return filtered
+}
+
+function paginateCurrentView() {
+  const filtered = filterTasksForCurrentView(allTasksSnapshot.value)
+  const pages = Math.max(1, Math.ceil(filtered.length / taskPage.size))
+
+  taskPage.page = Math.min(Math.max(1, taskPage.page), pages)
+  taskPage.total = filtered.length
+  taskPage.pages = pages
+
+  const start = (taskPage.page - 1) * taskPage.size
+  tasks.value = filtered.slice(start, start + taskPage.size)
+}
+
+function removeOrphanedTaskStepStats() {
+  const taskIds = new Set(allTasksSnapshot.value.map((task) => task.id))
+
+  for (const taskId of taskStepStatsById.keys()) {
+    if (!taskIds.has(taskId)) {
+      taskStepStatsById.delete(taskId)
+    }
+  }
+}
+
+function isTaskDueToday(task) {
+  return formatDateKey(task?.dueAt) === todayKey.value
+}
+
+function createTaskStats(source) {
+  const list = Array.isArray(source) ? source : []
+  const now = Date.now()
+
+  return {
+    total: list.length,
+    todo: list.filter((task) => task.status === 'TODO').length,
+    inProgress: list.filter((task) => task.status === 'IN_PROGRESS').length,
+    done: list.filter((task) => task.status === 'DONE').length,
+    highPriority: list.filter((task) => task.priority === 'HIGH').length,
+    dueToday: list.filter(isTaskDueToday).length,
+    overdue: list.filter((task) => {
+      const due = parseLocalDateTime(task.dueAt)
+      return task.status !== 'DONE' && Boolean(due && due.getTime() < now)
+    }).length
   }
 }
 
@@ -654,37 +875,21 @@ async function refreshTasks() {
   errorMessage.value = ''
 
   try {
-    const result = await listTasks({
-      status: listFilters.status,
-      priority: listFilters.priority,
-      keyword: query.value.trim(),
-      page: taskPage.page,
-      size: taskPage.size
-    })
-
-    if (Array.isArray(result)) {
-      tasks.value = result
-      taskPage.page = 1
-      taskPage.size = result.length || 10
-      taskPage.total = result.length
-      taskPage.pages = 1
-    } else {
-      tasks.value = result.records || []
-      taskPage.page = result.page || 1
-      taskPage.size = result.size || taskPage.size
-      taskPage.total = result.total || 0
-      taskPage.pages = result.pages || 1
-    }
+    allTasksSnapshot.value = await fetchAllTaskRecords()
+    paginateCurrentView()
 
     void refreshTaskStepStats(tasks.value)
+    removeOrphanedTaskStepStats()
 
     if (selectedTask.value) {
       const latest = tasks.value.find((task) => task.id === selectedTask.value.id)
       selectedTask.value = latest || null
     }
 
-    await refreshTaskStats()
-    await refreshTaskReminders()
+    await Promise.all([
+      refreshTaskStats(),
+      refreshTaskReminders()
+    ])
   } catch (error) {
     errorMessage.value = error.message || '任务加载失败，请稍后重试。'
   } finally {
@@ -696,15 +901,7 @@ async function refreshTaskStats() {
   try {
     Object.assign(taskStats, await getTaskStats())
   } catch {
-    Object.assign(taskStats, {
-      total: taskPage.total,
-      todo: activeTasks.value.filter((task) => task.status === 'TODO').length,
-      inProgress: inProgressTasks.value.length,
-      done: doneTasks.value.length,
-      highPriority: importantTasks.value.length,
-      dueToday: todayTasks.value.length,
-      overdue: 0
-    })
+    Object.assign(taskStats, createTaskStats(allTasksSnapshot.value))
   }
 }
 
@@ -728,6 +925,7 @@ function logout() {
   localStorage.removeItem('aiTodoToken')
   user.value = null
   tasks.value = []
+  allTasksSnapshot.value = []
   taskStepStatsById.clear()
   reminders.value = []
   Object.assign(taskStats, {
@@ -744,28 +942,29 @@ function logout() {
   successMessage.value = ''
 }
 
-function resolveViewTasks() {
-  if (activeView.value === 'today') {
-    return todayTasks.value
+async function openLogoutConfirm() {
+  isLogoutConfirmOpen.value = true
+  isSidebarOpen.value = false
+  deleteDialogError.value = ''
+  syncBodyModalState()
+
+  await nextTick()
+  deleteCancelButtonRef.value?.focus()
+}
+
+function confirmLogout() {
+  isLogoutConfirmOpen.value = false
+  syncBodyModalState()
+  logout()
+}
+
+function confirmDialogAction() {
+  if (isLogoutConfirmOpen.value) {
+    confirmLogout()
+    return
   }
 
-  if (activeView.value === 'planned') {
-    return plannedTasks.value
-  }
-
-  if (activeView.value === 'important') {
-    return importantTasks.value
-  }
-
-  if (activeView.value === 'progress') {
-    return inProgressTasks.value
-  }
-
-  if (activeView.value === 'done') {
-    return doneTasks.value
-  }
-
-  return tasks.value
+  return confirmDeleteTask()
 }
 
 async function selectView(key) {
@@ -1040,39 +1239,52 @@ function formatTimeLabel(value) {
   return value || '默认 23:59'
 }
 
-function formatShortDate(value) {
-  if (!value) {
-    return ''
-  }
-
-  const [, month, day] = value.split('-')
-
-  return `${month}/${day}`
+function setCreateDueToday() {
+  setCreateDueParts(todayKey.value, resolveCreateDueValues().time || '18:00')
 }
 
-function resolveDueAt() {
-  if (!taskForm.dueDate) {
-    return null
-  }
-
-  return `${taskForm.dueDate}T${taskForm.dueTime || '23:59'}`
-}
-
-function setDueToday() {
-  taskForm.dueDate = todayKey.value
-  taskForm.dueTime = taskForm.dueTime || '18:00'
-}
-
-function setDueTomorrow() {
+function setCreateDueTomorrow() {
   const tomorrow = new Date()
   tomorrow.setDate(tomorrow.getDate() + 1)
-  taskForm.dueDate = toLocalDateKey(tomorrow)
-  taskForm.dueTime = taskForm.dueTime || '18:00'
+  setCreateDueParts(toLocalDateKey(tomorrow), resolveCreateDueValues().time || '18:00')
 }
 
-function clearDue() {
+function clearCreateDue() {
   taskForm.dueDate = ''
   taskForm.dueTime = ''
+  setCreateDueParts('', '')
+  composerError.value = ''
+}
+
+function updateCreateDatePart(part, value) {
+  const maxLength = part === 'year' ? 4 : 2
+  createDueParts[part] = String(value).replace(/\D/g, '').slice(0, maxLength)
+  composerError.value = ''
+}
+
+function updateCreateTimePart(part, value) {
+  createDueParts[part] = String(value).replace(/\D/g, '').slice(0, 2)
+  composerError.value = ''
+}
+
+function setCreateDueParts(date, time) {
+  const dateParts = splitDateParts(date)
+  const timeParts = splitTimeParts(time)
+
+  Object.assign(createDueParts, {
+    year: dateParts.year,
+    month: dateParts.month,
+    day: dateParts.day,
+    hour: timeParts.hour,
+    minute: timeParts.minute
+  })
+  taskForm.dueDate = date
+  taskForm.dueTime = time
+  composerError.value = ''
+}
+
+function resolveCreateDueValues() {
+  return resolveDuePartValues(createDueParts)
 }
 
 function setEditDueToday() {
@@ -1108,7 +1320,11 @@ function setEditDueParts(date, time) {
 }
 
 function resolveEditDueValues() {
-  const { year, month, day, hour, minute } = editDueParts
+  return resolveDuePartValues(editDueParts)
+}
+
+function resolveDuePartValues(parts) {
+  const { year, month, day, hour, minute } = parts
   const hasDatePart = Boolean(year || month || day)
   const hasTimePart = Boolean(hour || minute)
 
@@ -1172,6 +1388,9 @@ function splitTimeParts(value) {
 
 async function openTaskDetail(task) {
   const taskId = task.id
+  if (isComposerOpen.value) {
+    closeComposer()
+  }
   selectedTask.value = task
   expandedDetailSection.value = null
   taskSteps.value = []
@@ -1250,9 +1469,7 @@ async function handleUpdateTask() {
     const updated = await updateTask(selectedTask.value.id, payload)
     selectedTask.value = updated
     fillEditForm(updated)
-    upsertTask(updated)
-    await refreshTaskStats()
-    await refreshTaskReminders()
+    await refreshTasks()
   } catch (error) {
     detailError.value = error.message || '更新任务失败。'
   } finally {
@@ -1260,28 +1477,59 @@ async function handleUpdateTask() {
   }
 }
 
-async function handleDeleteTask() {
-  if (!selectedTask.value) {
+async function openDeleteConfirm() {
+  const task = selectedTask.value
+
+  if (!task) {
     return
   }
 
-  if (!window.confirm(`确定删除“${selectedTask.value.title}”吗？此操作无法撤销。`)) {
+  deleteCandidate.value = {
+    id: task.id,
+    title: task.title
+  }
+  deleteDialogError.value = ''
+  syncBodyModalState()
+
+  await nextTick()
+  deleteCancelButtonRef.value?.focus()
+}
+
+function closeConfirmationDialog() {
+  if (isTaskDeleting.value) {
     return
   }
 
-  detailError.value = ''
+  deleteCandidate.value = null
+  isLogoutConfirmOpen.value = false
+  deleteDialogError.value = ''
+  syncBodyModalState()
+}
+
+async function confirmDeleteTask() {
+  const task = deleteCandidate.value
+
+  if (!task || isTaskDeleting.value) {
+    return
+  }
+
+  deleteDialogError.value = ''
+  isTaskDeleting.value = true
 
   try {
-    const taskId = selectedTask.value.id
-    await deleteTask(taskId)
-    tasks.value = tasks.value.filter((task) => task.id !== taskId)
-    taskStepStatsById.delete(taskId)
-    closeTaskDetail()
-    await refreshTaskStats()
-    await refreshTaskReminders()
+    await deleteTask(task.id)
   } catch (error) {
-    detailError.value = error.message || '删除任务失败。'
+    deleteDialogError.value = error.message || '删除任务失败，请稍后重试。'
+    isTaskDeleting.value = false
+    return
   }
+
+  taskStepStatsById.delete(task.id)
+  isTaskDeleting.value = false
+  deleteCandidate.value = null
+  syncBodyModalState()
+  closeTaskDetail()
+  await refreshTasks()
 }
 
 async function handleStatusChange(task, status) {
@@ -1294,15 +1542,13 @@ async function handleStatusChange(task, status) {
 
   try {
     const updated = await updateTaskStatus(task.id, { status })
-    upsertTask(updated)
 
     if (selectedTask.value?.id === updated.id) {
       selectedTask.value = updated
       fillEditForm(updated)
     }
 
-    await refreshTaskStats()
-    await refreshTaskReminders()
+    await refreshTasks()
 
   } catch (error) {
     const message = error.message || '更新任务状态失败。'
@@ -1343,17 +1589,6 @@ function splitDueAt(value) {
     date,
     time: time.slice(0, 5)
   }
-}
-
-function upsertTask(task) {
-  const index = tasks.value.findIndex((item) => item.id === task.id)
-
-  if (index === -1) {
-    tasks.value = [task, ...tasks.value]
-    return
-  }
-
-  tasks.value = [task, ...tasks.value.filter((item) => item.id !== task.id)]
 }
 
 function closeTaskDetail() {
@@ -1692,13 +1927,14 @@ async function handleSaveAiStepDrafts() {
 
 async function openAiAdvisor() {
   isAiAdvisorOpen.value = true
-  isComposerOpen.value = false
-  isDuePanelOpen.value = false
+  if (isComposerOpen.value) {
+    closeComposer()
+  }
   isFilterOpen.value = false
   isReminderOpen.value = false
   isSidebarOpen.value = false
   aiError.value = ''
-  document.body.classList.add('modal-open')
+  syncBodyModalState()
 
   await nextTick()
   aiMessageInputRef.value?.focus()
@@ -1707,7 +1943,7 @@ async function openAiAdvisor() {
 function closeAiAdvisor() {
   isAiAdvisorOpen.value = false
   aiCopied.value = false
-  document.body.classList.remove('modal-open')
+  syncBodyModalState()
 }
 
 function applyAiPrompt(prompt) {
@@ -1838,15 +2074,74 @@ function cleanAdviceText(text) {
 }
 
 function openComposer() {
+  if (selectedTask.value) {
+    closeTaskDetail()
+  }
+
+  resetTaskForm()
+
+  if (activeView.value === 'today') {
+    setCreateDueParts(todayKey.value, '23:59')
+  }
+
   isComposerOpen.value = true
-  isDuePanelOpen.value = false
   isFilterOpen.value = false
   isReminderOpen.value = false
+  isSidebarOpen.value = false
 }
 
 function closeComposer() {
+  if (isTaskSubmitting.value) {
+    return
+  }
+
   isComposerOpen.value = false
-  isDuePanelOpen.value = false
+  resetTaskForm()
+}
+
+function resetTaskForm() {
+  taskForm.title = ''
+  taskForm.description = ''
+  taskForm.status = 'TODO'
+  taskForm.priority = 'MEDIUM'
+  taskForm.dueDate = ''
+  taskForm.dueTime = ''
+  setCreateDueParts('', '')
+  createStepDraft.value = ''
+  createStepDrafts.value = []
+  composerError.value = ''
+}
+
+function addCreateStep() {
+  const title = createStepDraft.value.trim()
+  composerError.value = ''
+
+  if (!title) {
+    return
+  }
+
+  if (title.length > 100) {
+    composerError.value = '执行步骤不能超过 100 个字符。'
+    return
+  }
+
+  const isDuplicate = createStepDrafts.value.some((step) => (
+    step.title.toLocaleLowerCase() === title.toLocaleLowerCase()
+  ))
+
+  if (isDuplicate) {
+    composerError.value = '这个执行步骤已经添加过了。'
+    return
+  }
+
+  createStepDraftId += 1
+  createStepDrafts.value.push({ id: createStepDraftId, title })
+  createStepDraft.value = ''
+}
+
+function removeCreateStep(stepId) {
+  createStepDrafts.value = createStepDrafts.value.filter((step) => step.id !== stepId)
+  composerError.value = ''
 }
 
 function isTaskOverdue(task) {
@@ -1960,7 +2255,7 @@ function priorityText(priority) {
   <main
     v-else
     class="todo-app"
-    :class="{ 'has-detail': selectedTask, 'is-detail-resizing': isDetailResizing }"
+    :class="{ 'has-detail': selectedTask || isComposerOpen, 'is-detail-resizing': isDetailResizing }"
     :style="{ '--detail-panel-width': `${detailPanelWidth}px` }"
   >
     <button
@@ -2006,7 +2301,7 @@ function priorityText(priority) {
       </nav>
 
       <div class="sidebar-footer">
-        <button class="ghost-button" type="button" @click="logout">
+        <button class="ghost-button" type="button" @click="openLogoutConfirm">
           <LogOut :size="17" />
           <span>退出登录</span>
         </button>
@@ -2136,10 +2431,10 @@ function priorityText(priority) {
       </header>
 
       <div class="board-summary" aria-label="任务概览">
-        <span><b>{{ taskStats.total }}</b> 全部</span>
-        <span><b>{{ taskStats.todo }}</b> 待办</span>
-        <span><b>{{ taskStats.dueToday }}</b> 今天截止</span>
-        <span v-if="taskStats.overdue" class="summary-overdue"><b>{{ taskStats.overdue }}</b> 已逾期</span>
+        <span><b>{{ currentViewStats.total }}</b> 当前视图</span>
+        <span><b>{{ currentViewStats.todo }}</b> 待办</span>
+        <span><b>{{ currentViewStats.dueToday }}</b> 今天截止</span>
+        <span v-if="currentViewStats.overdue" class="summary-overdue"><b>{{ currentViewStats.overdue }}</b> 已逾期</span>
       </div>
 
       <div v-if="errorMessage" class="notice error list-error" role="alert">
@@ -2284,77 +2579,6 @@ function priorityText(priority) {
         </label>
       </div>
 
-      <div v-if="isComposerOpen" class="composer-overlay" @click.self="closeComposer">
-        <form class="task-composer" @submit.prevent="handleCreateTask">
-          <div class="composer-heading">
-            <div>
-              <p>新建任务</p>
-              <span>把要做的事写下来，细节可以稍后补充。</span>
-            </div>
-            <button type="button" class="icon-button" aria-label="关闭新建任务" @click="closeComposer">
-              <X :size="18" />
-            </button>
-          </div>
-
-          <div class="composer-main">
-            <Plus :size="20" />
-            <input v-model="taskForm.title" type="text" maxlength="100" placeholder="任务标题" autofocus />
-          </div>
-
-          <div class="composer-options">
-            <input v-model="taskForm.description" type="text" maxlength="100" placeholder="描述，最多 100 个字符" />
-            <div class="priority-segment" aria-label="优先级">
-              <button
-                v-for="option in priorityOptions"
-                :key="option.value"
-                type="button"
-                :class="[{ active: taskForm.priority === option.value }, option.tone]"
-                @click="taskForm.priority = option.value"
-              >
-                {{ option.label }}
-              </button>
-            </div>
-            <div ref="dueMenuRef" class="due-menu" :class="{ open: isDuePanelOpen }">
-              <button class="due-button" type="button" @click="isDuePanelOpen = !isDuePanelOpen">
-                <CalendarDays :size="17" />
-                <span>{{ dueButtonLabel }}</span>
-              </button>
-
-              <div v-if="isDuePanelOpen" class="due-popover">
-                <div class="due-popover-header">
-                  <strong>截止时间</strong>
-                  <button type="button" @click="clearDue">清除</button>
-                </div>
-
-                <div class="due-presets">
-                  <button type="button" @click="setDueToday">今天</button>
-                  <button type="button" @click="setDueTomorrow">明天</button>
-                </div>
-
-                <label class="due-field">
-                  <span>日期</span>
-                  <input v-model="taskForm.dueDate" type="date" />
-                </label>
-
-                <label class="due-field">
-                  <span>时间</span>
-                  <input v-model="taskForm.dueTime" type="time" />
-                </label>
-
-                <div class="due-summary">
-                  {{ formatDateLabel(taskForm.dueDate) }} · {{ formatTimeLabel(taskForm.dueTime) }}
-                </div>
-
-                <button class="due-done" type="button" @click="isDuePanelOpen = false">完成</button>
-              </div>
-            </div>
-            <button class="primary-button compact" type="submit" :disabled="isTaskSubmitting || !isTaskValid">
-              {{ isTaskSubmitting ? '创建中...' : '创建任务' }}
-            </button>
-          </div>
-        </form>
-      </div>
-
       <Transition name="ai-overlay">
         <div v-if="isAiAdvisorOpen" class="ai-advisor-overlay" @click.self="closeAiAdvisor">
           <section class="ai-advisor" role="dialog" aria-modal="true" aria-labelledby="ai-advisor-title">
@@ -2481,7 +2705,323 @@ function priorityText(priority) {
           </section>
         </div>
       </Transition>
+
+      <Teleport to="body">
+        <Transition name="delete-dialog">
+          <div v-if="isConfirmationDialogOpen" class="delete-dialog-overlay" @click.self="closeConfirmationDialog">
+            <section
+              class="delete-dialog"
+              :class="{ 'logout-dialog': isLogoutConfirmOpen }"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="delete-dialog-title"
+              aria-describedby="delete-dialog-description"
+              @keydown="handleDeleteDialogKeydown"
+            >
+              <header class="delete-dialog-header">
+                <span class="delete-dialog-mark">
+                  <LogOut v-if="isLogoutConfirmOpen" :size="20" />
+                  <Trash2 v-else :size="20" />
+                </span>
+                <span>{{ isLogoutConfirmOpen ? 'SIGN OUT' : 'DELETE TASK' }}</span>
+                <button
+                  class="icon-button delete-dialog-close"
+                  type="button"
+                  :aria-label="isLogoutConfirmOpen ? '关闭退出确认' : '关闭删除确认'"
+                  :disabled="isTaskDeleting"
+                  @click="closeConfirmationDialog"
+                >
+                  <X :size="18" />
+                </button>
+              </header>
+
+              <div class="delete-dialog-copy">
+                <h2 id="delete-dialog-title">{{ isLogoutConfirmOpen ? '退出当前账号？' : '删除这个任务？' }}</h2>
+                <p id="delete-dialog-description">
+                  <template v-if="isLogoutConfirmOpen">
+                    退出后将清除本机的登录状态，你的任务数据仍会保留在账户中。
+                  </template>
+                  <template v-else>
+                    “{{ deleteCandidate.title }}”将从任务列表中永久移除。
+                  </template>
+                </p>
+              </div>
+
+              <div class="delete-dialog-warning">
+                <LogOut v-if="isLogoutConfirmOpen" :size="16" />
+                <History v-else :size="16" />
+                <span>{{ isLogoutConfirmOpen ? '重新登录后可继续管理任务' : '此操作无法撤销' }}</span>
+              </div>
+
+              <p v-if="!isLogoutConfirmOpen && deleteDialogError" class="delete-dialog-error" role="alert">
+                {{ deleteDialogError }}
+              </p>
+
+              <footer class="delete-dialog-actions">
+                <button
+                  ref="deleteCancelButtonRef"
+                  class="delete-cancel-button"
+                  type="button"
+                  :disabled="isTaskDeleting"
+                  @click="closeConfirmationDialog"
+                >
+                  取消
+                </button>
+                <button
+                  class="delete-confirm-button"
+                  :class="{ 'logout-confirm-button': isLogoutConfirmOpen }"
+                  type="button"
+                  :disabled="isTaskDeleting"
+                  @click="confirmDialogAction"
+                >
+                  <RefreshCw v-if="isTaskDeleting" class="spin-icon" :size="16" />
+                  <LogOut v-else-if="isLogoutConfirmOpen" :size="16" />
+                  <Trash2 v-else :size="16" />
+                  <span>{{ isTaskDeleting ? '正在删除' : isLogoutConfirmOpen ? '退出登录' : '确认删除' }}</span>
+                </button>
+              </footer>
+            </section>
+          </div>
+        </Transition>
+      </Teleport>
     </section>
+
+    <aside v-if="isComposerOpen" class="detail-panel create-panel">
+      <div
+        class="detail-resize-handle"
+        role="separator"
+        aria-label="调整新建任务栏宽度"
+        aria-orientation="vertical"
+        :aria-valuemin="detailPanelBounds.min"
+        :aria-valuemax="detailPanelBounds.max"
+        :aria-valuenow="detailPanelWidth"
+        tabindex="0"
+        title="拖动调整创建栏宽度，双击恢复默认"
+        @pointerdown="startDetailResize"
+        @dblclick="resetDetailPanelWidth"
+        @keydown="handleDetailResizeKeydown"
+      >
+        <GripVertical :size="15" />
+        <span v-if="isDetailResizing">{{ detailPanelWidth }} px</span>
+      </div>
+
+      <div class="detail-panel-scroll create-panel-scroll">
+        <header class="detail-header create-panel-header">
+          <div class="detail-heading-copy">
+            <p>创建任务</p>
+            <span>{{ currentView.label }}</span>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="关闭新建任务"
+            :disabled="isTaskSubmitting"
+            @click="closeComposer"
+          >
+            <X :size="18" />
+          </button>
+        </header>
+
+        <form class="create-detail-form" @submit.prevent="handleCreateTask">
+          <label class="create-title-field">
+            <span>任务标题</span>
+            <input
+              v-focus
+              v-model="taskForm.title"
+              type="text"
+              maxlength="100"
+              placeholder="准备做什么？"
+              @input="composerError = ''"
+            />
+            <small>{{ taskForm.title.length }} / 100</small>
+          </label>
+
+          <section class="create-form-section create-properties-section">
+            <div class="create-section-heading">
+              <div>
+                <span class="create-section-icon status-icon"><Circle :size="16" /></span>
+                <strong>状态</strong>
+              </div>
+            </div>
+            <div class="create-choice-grid status-choice-grid" aria-label="任务状态">
+              <button
+                v-for="option in statusOptions"
+                :key="option.value"
+                type="button"
+                :class="[`status-${option.value}`, { active: taskForm.status === option.value }]"
+                @click="taskForm.status = option.value"
+              >
+                <Circle v-if="option.value === 'TODO'" :size="15" />
+                <RefreshCw v-else-if="option.value === 'IN_PROGRESS'" :size="15" />
+                <Check v-else :size="15" />
+                <span>{{ option.label }}</span>
+              </button>
+            </div>
+
+            <div class="create-section-heading priority-create-heading">
+              <div>
+                <span class="create-section-icon priority-icon"><Flag :size="16" /></span>
+                <strong>优先级</strong>
+              </div>
+            </div>
+            <div class="create-choice-grid priority-choice-grid" aria-label="任务优先级">
+              <button
+                v-for="option in priorityOptions"
+                :key="option.value"
+                type="button"
+                :class="[option.tone, { active: taskForm.priority === option.value }]"
+                @click="taskForm.priority = option.value"
+              >
+                <Flag :size="14" />
+                <span>{{ option.label }}</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="create-form-section">
+            <div class="create-section-heading">
+              <div>
+                <span class="create-section-icon description-icon"><AlignLeft :size="16" /></span>
+                <strong>描述</strong>
+              </div>
+              <small>{{ taskForm.description.length }} / 100</small>
+            </div>
+            <textarea
+              v-model="taskForm.description"
+              maxlength="100"
+              rows="4"
+              placeholder="补充任务背景、目标或注意事项"
+              @input="composerError = ''"
+            ></textarea>
+          </section>
+
+          <section class="create-form-section create-due-section">
+            <div class="create-section-heading">
+              <div>
+                <span class="create-section-icon due-icon"><CalendarDays :size="16" /></span>
+                <span>
+                  <strong>截止时间</strong>
+                  <small>{{ createDueLabel }}</small>
+                </span>
+              </div>
+              <button v-if="hasCreateDueValue" type="button" @click="clearCreateDue">
+                清除
+              </button>
+            </div>
+
+            <div class="create-due-presets">
+              <button type="button" @click="setCreateDueToday">今天傍晚</button>
+              <button type="button" @click="setCreateDueTomorrow">明天傍晚</button>
+            </div>
+
+            <div class="date-part-grid create-date-grid" aria-label="新任务截止日期">
+              <label>
+                <span>年</span>
+                <input
+                  :value="createDateParts.year"
+                  inputmode="numeric"
+                  maxlength="4"
+                  placeholder="2026"
+                  @input="updateCreateDatePart('year', $event.target.value)"
+                />
+              </label>
+              <label>
+                <span>月</span>
+                <input
+                  :value="createDateParts.month"
+                  inputmode="numeric"
+                  maxlength="2"
+                  placeholder="07"
+                  @input="updateCreateDatePart('month', $event.target.value)"
+                />
+              </label>
+              <label>
+                <span>日</span>
+                <input
+                  :value="createDateParts.day"
+                  inputmode="numeric"
+                  maxlength="2"
+                  placeholder="31"
+                  @input="updateCreateDatePart('day', $event.target.value)"
+                />
+              </label>
+            </div>
+
+            <div class="time-part-grid create-time-grid" aria-label="新任务截止时间">
+              <label>
+                <span>时</span>
+                <input
+                  :value="createTimeParts.hour"
+                  inputmode="numeric"
+                  maxlength="2"
+                  placeholder="18"
+                  @input="updateCreateTimePart('hour', $event.target.value)"
+                />
+              </label>
+              <i>:</i>
+              <label>
+                <span>分</span>
+                <input
+                  :value="createTimeParts.minute"
+                  inputmode="numeric"
+                  maxlength="2"
+                  placeholder="00"
+                  @input="updateCreateTimePart('minute', $event.target.value)"
+                />
+              </label>
+            </div>
+          </section>
+
+          <section class="create-form-section create-steps-section">
+            <div class="create-section-heading">
+              <div>
+                <span class="create-section-icon steps-icon"><ListChecks :size="17" /></span>
+                <span>
+                  <strong>执行步骤</strong>
+                  <small>{{ createStepDrafts.length ? `${createStepDrafts.length} 个步骤` : '尚未添加' }}</small>
+                </span>
+              </div>
+            </div>
+
+            <TransitionGroup v-if="createStepDrafts.length" name="create-step" tag="div" class="create-step-list">
+              <div v-for="(step, index) in createStepDrafts" :key="step.id" class="create-step-row">
+                <span>{{ index + 1 }}</span>
+                <p>{{ step.title }}</p>
+                <button type="button" :aria-label="`移除步骤 ${step.title}`" title="移除" @click="removeCreateStep(step.id)">
+                  <X :size="14" />
+                </button>
+              </div>
+            </TransitionGroup>
+
+            <div class="create-step-composer">
+              <Plus :size="16" />
+              <input
+                v-model="createStepDraft"
+                type="text"
+                maxlength="100"
+                placeholder="添加一个执行步骤"
+                @input="composerError = ''"
+                @keydown.enter.prevent="addCreateStep"
+              />
+              <button type="button" :disabled="!createStepDraft.trim()" aria-label="添加执行步骤" @click="addCreateStep">
+                <Plus :size="15" />
+              </button>
+            </div>
+          </section>
+
+          <p v-if="composerError" class="notice error create-panel-error" role="alert">{{ composerError }}</p>
+
+          <footer class="create-panel-actions">
+            <button type="button" :disabled="isTaskSubmitting" @click="closeComposer">取消</button>
+            <button class="primary-button" type="submit" :disabled="isTaskSubmitting || !isTaskValid">
+              <RefreshCw v-if="isTaskSubmitting" class="spin-icon" :size="16" />
+              <Plus v-else :size="17" />
+              <span>{{ isTaskSubmitting ? '创建中...' : '创建任务' }}</span>
+            </button>
+          </footer>
+        </form>
+      </div>
+    </aside>
 
     <aside v-if="selectedTask" class="detail-panel">
       <div
@@ -2940,7 +3480,7 @@ function priorityText(priority) {
             <span>{{ isDetailSaving ? '保存中...' : '保存修改' }}</span>
           </button>
 
-          <button class="danger-icon-button" type="button" aria-label="删除任务" title="删除任务" @click="handleDeleteTask">
+          <button class="danger-icon-button" type="button" aria-label="删除任务" title="删除任务" @click="openDeleteConfirm">
             <Trash2 :size="17" />
           </button>
         </div>
