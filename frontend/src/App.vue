@@ -36,6 +36,7 @@ import {
 } from '@lucide/vue'
 import {
   createTaskStep,
+  createTaskStepsBatch,
   createTask,
   deleteTaskStep,
   deleteTask,
@@ -109,6 +110,7 @@ const detailPropertiesRef = ref(null)
 const aiMessageInputRef = ref(null)
 const deleteCancelButtonRef = ref(null)
 const DETAIL_PANEL_WIDTH_KEY = 'aiTodoDetailPanelWidth'
+const TASK_STEP_BATCH_LIMIT = 10
 const DETAIL_PANEL_DEFAULT_WIDTH = 520
 const DETAIL_PANEL_MIN_WIDTH = 360
 const DETAIL_PANEL_MAX_WIDTH = 760
@@ -721,6 +723,12 @@ async function handleCreateTask() {
     ...createStepDrafts.value.map((step) => step.title),
     ...(pendingStepTitle ? [pendingStepTitle] : [])
   ]
+
+  if (stepTitles.length > TASK_STEP_BATCH_LIMIT) {
+    composerError.value = `一次最多添加 ${TASK_STEP_BATCH_LIMIT} 个执行步骤。`
+    return
+  }
+
   isTaskSubmitting.value = true
 
   try {
@@ -735,22 +743,20 @@ async function handleCreateTask() {
       ...(requestedStatus !== 'TODO'
         ? [{ type: 'status', request: updateTaskStatus(created.id, { status: requestedStatus }) }]
         : []),
-      ...stepTitles.map((title) => ({
-        type: 'step',
-        request: createTaskStep(created.id, { title })
-      }))
+      ...(stepTitles.length
+        ? [{ type: 'steps', request: createTaskStepsBatch(created.id, { titles: stepTitles }) }]
+        : [])
     ]
     const followUpResults = await Promise.allSettled(followUpRequests.map((item) => item.request))
-    const createdSteps = followUpResults
-      .map((result, index) => ({ result, type: followUpRequests[index].type }))
-      .filter(({ result, type }) => type === 'step' && result.status === 'fulfilled')
-      .map(({ result }) => result.value)
-    const failedStatus = followUpResults.some((result, index) => (
-      followUpRequests[index].type === 'status' && result.status === 'rejected'
-    ))
-    const failedStepCount = followUpResults.filter((result, index) => (
-      followUpRequests[index].type === 'step' && result.status === 'rejected'
-    )).length
+    const statusResultIndex = followUpRequests.findIndex((item) => item.type === 'status')
+    const stepsResultIndex = followUpRequests.findIndex((item) => item.type === 'steps')
+    const statusResult = statusResultIndex >= 0 ? followUpResults[statusResultIndex] : null
+    const stepsResult = stepsResultIndex >= 0 ? followUpResults[stepsResultIndex] : null
+    const createdSteps = stepsResult?.status === 'fulfilled' && Array.isArray(stepsResult.value)
+      ? stepsResult.value
+      : []
+    const failedStatus = statusResult?.status === 'rejected'
+    const failedSteps = stepsResult?.status === 'rejected'
 
     syncTaskStepStats(created.id, createdSteps)
     resetTaskForm()
@@ -758,12 +764,12 @@ async function handleCreateTask() {
     taskPage.page = 1
     await refreshTasks()
 
-    if (failedStatus || failedStepCount) {
+    if (failedStatus || failedSteps) {
       const failures = [
-        ...(failedStatus ? ['状态'] : []),
-        ...(failedStepCount ? [`${failedStepCount} 个执行步骤`] : [])
+        ...(failedStatus ? [`状态未保存：${statusResult.reason?.message || '请稍后重试'}`] : []),
+        ...(failedSteps ? [`执行步骤未保存：${stepsResult.reason?.message || '请稍后重试'}`] : [])
       ]
-      errorMessage.value = `任务已创建，但${failures.join('和')}未保存，请打开任务后补充。`
+      errorMessage.value = `任务已创建，但${failures.join('；')}。请打开任务后补充。`
     }
   } catch (error) {
     composerError.value = error.message || '创建任务失败。'
@@ -1887,42 +1893,40 @@ async function handleSaveAiStepDrafts() {
     return
   }
 
+  if (candidates.length > TASK_STEP_BATCH_LIMIT) {
+    aiStepDraftError.value = `一次最多保存 ${TASK_STEP_BATCH_LIMIT} 个步骤。`
+    return
+  }
+
   isAiStepDraftSaving.value = true
-  const savedDraftIds = new Set()
-  const createdSteps = []
-  let saveError = null
+  const savedDraftIds = new Set(candidates.map((draft) => draft.id))
 
-  for (const draft of candidates) {
-    try {
-      createdSteps.push(await createTaskStep(taskId, { title: draft.title }))
-      savedDraftIds.add(draft.id)
-    } catch (error) {
-      saveError = error
-      break
+  try {
+    const result = await createTaskStepsBatch(taskId, {
+      titles: candidates.map((draft) => draft.title)
+    })
+    const createdSteps = Array.isArray(result) ? result : []
+
+    if (selectedTask.value?.id === taskId) {
+      taskSteps.value = [...taskSteps.value, ...createdSteps]
+      syncTaskStepStats(taskId, taskSteps.value)
+    } else {
+      void refreshTaskStepStats([{ id: taskId }])
     }
-  }
 
-  if (selectedTask.value?.id === taskId && createdSteps.length) {
-    taskSteps.value = [...taskSteps.value, ...createdSteps]
-    syncTaskStepStats(taskId, taskSteps.value)
-  } else if (createdSteps.length) {
-    void refreshTaskStepStats([{ id: taskId }])
-  }
+    aiStepDrafts.value = aiStepDrafts.value
+      .filter((draft) => !savedDraftIds.has(draft.id))
+      .map((draft) => duplicateIds.has(draft.id) ? { ...draft, selected: false } : draft)
 
-  aiStepDrafts.value = aiStepDrafts.value
-    .filter((draft) => !savedDraftIds.has(draft.id))
-    .map((draft) => duplicateIds.has(draft.id) ? { ...draft, selected: false } : draft)
-
-  if (createdSteps.length) {
     const duplicateText = duplicateIds.size ? `，另有 ${duplicateIds.size} 条重复草稿已取消选择` : ''
     aiStepDraftMessage.value = `已加入 ${createdSteps.length} 个执行步骤${duplicateText}。`
+  } catch (error) {
+    aiStepDrafts.value = aiStepDrafts.value
+      .map((draft) => duplicateIds.has(draft.id) ? { ...draft, selected: false } : draft)
+    aiStepDraftError.value = error.message || '批量保存步骤失败，请重试。'
+  } finally {
+    isAiStepDraftSaving.value = false
   }
-
-  if (saveError) {
-    aiStepDraftError.value = saveError.message || '部分步骤保存失败，请重试。'
-  }
-
-  isAiStepDraftSaving.value = false
 }
 
 async function openAiAdvisor() {
@@ -2117,6 +2121,11 @@ function addCreateStep() {
   composerError.value = ''
 
   if (!title) {
+    return
+  }
+
+  if (createStepDrafts.value.length >= TASK_STEP_BATCH_LIMIT) {
+    composerError.value = `一次最多添加 ${TASK_STEP_BATCH_LIMIT} 个执行步骤。`
     return
   }
 
@@ -2978,7 +2987,7 @@ function priorityText(priority) {
                 <span class="create-section-icon steps-icon"><ListChecks :size="17" /></span>
                 <span>
                   <strong>执行步骤</strong>
-                  <small>{{ createStepDrafts.length ? `${createStepDrafts.length} 个步骤` : '尚未添加' }}</small>
+                  <small>{{ createStepDrafts.length }} / {{ TASK_STEP_BATCH_LIMIT }}</small>
                 </span>
               </div>
             </div>
@@ -2999,11 +3008,17 @@ function priorityText(priority) {
                 v-model="createStepDraft"
                 type="text"
                 maxlength="100"
-                placeholder="添加一个执行步骤"
+                :disabled="createStepDrafts.length >= TASK_STEP_BATCH_LIMIT"
+                :placeholder="createStepDrafts.length >= TASK_STEP_BATCH_LIMIT ? '已达到本次添加上限' : '添加一个执行步骤'"
                 @input="composerError = ''"
                 @keydown.enter.prevent="addCreateStep"
               />
-              <button type="button" :disabled="!createStepDraft.trim()" aria-label="添加执行步骤" @click="addCreateStep">
+              <button
+                type="button"
+                :disabled="!createStepDraft.trim() || createStepDrafts.length >= TASK_STEP_BATCH_LIMIT"
+                aria-label="添加执行步骤"
+                @click="addCreateStep"
+              >
                 <Plus :size="15" />
               </button>
             </div>
@@ -3191,11 +3206,11 @@ function priorityText(priority) {
                   <button
                     type="button"
                     class="ai-step-save"
-                    :disabled="isAiStepDraftSaving || !selectedAiStepDrafts.length"
+                    :disabled="isAiStepDraftSaving || !selectedAiStepDrafts.length || selectedAiStepDrafts.length > TASK_STEP_BATCH_LIMIT"
                     @click="handleSaveAiStepDrafts"
                   >
                     <Plus :size="14" />
-                    <span>{{ isAiStepDraftSaving ? '添加中...' : `添加选中 ${selectedAiStepDrafts.length} 项` }}</span>
+                    <span>{{ isAiStepDraftSaving ? '添加中...' : `批量添加 ${selectedAiStepDrafts.length} 项` }}</span>
                   </button>
                 </footer>
               </section>

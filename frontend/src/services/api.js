@@ -251,6 +251,13 @@ export function createTaskStep(taskId, payload) {
   })
 }
 
+export function createTaskStepsBatch(taskId, payload) {
+  return request(`/tasks/${taskId}/steps/batch`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
 export function updateTaskStep(taskId, stepId, payload) {
   return request(`/tasks/${taskId}/steps/${stepId}`, {
     method: 'PATCH',

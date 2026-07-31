@@ -1,13 +1,18 @@
 package com.qijx.aitodo.task.service;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.qijx.aitodo.task.dto.TaskStepBatchCreateRequest;
 import com.qijx.aitodo.task.dto.TaskStepCreateRequest;
 import com.qijx.aitodo.task.dto.TaskStepResponse;
 import com.qijx.aitodo.task.dto.TaskStepUpdateRequest;
@@ -43,6 +48,39 @@ public class TaskStepService {
         taskStepMapper.insert(taskStep);
 
         return toResponse(taskStep);
+    }
+
+    @Transactional
+    public List<TaskStepResponse> createTaskStepsBatch(Long userId, Long taskId, TaskStepBatchCreateRequest request){
+        ensureTaskBelongsToUser(userId, taskId);
+
+        List<String> noramlizedTitles = normalizeAndValidateBatchTitles(request.getTitles());
+
+        ensureTitlesDoNotAlreadyExist(taskId, noramlizedTitles);
+
+        LocalDateTime now = LocalDateTime.now();
+
+        List<TaskStepResponse> responses = new ArrayList<>();
+
+        for(String title : noramlizedTitles){
+            TaskStep taskStep = new TaskStep();
+
+            taskStep.setTaskId(taskId);
+            taskStep.setTitle(title);
+            taskStep.setCompleted(false);
+            taskStep.setCreatedAt(now);
+            taskStep.setUpdatedAt(now);
+
+            int insertedRows = taskStepMapper.insert(taskStep);
+
+            if(insertedRows != 1){
+                throw new IllegalStateException("批量创建任务步骤失败");
+            }
+
+            responses.add(toResponse(taskStep));
+        }
+
+        return responses;
     }
 
     public List<TaskStepResponse> listTaskSteps(Long userId, Long taskId){
@@ -131,5 +169,53 @@ public class TaskStepService {
         }
 
         return taskStep;
+    }
+
+    private List<String> normalizeAndValidateBatchTitles(List<String> titles){
+        if(titles == null || titles.isEmpty()){
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "至少需要选择一个步骤");
+        }
+
+        if(titles.size() > 10){
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "一次最多保存10个步骤");
+        }
+
+        List<String> normalizedTitles = new ArrayList<>();
+        Set<String> uniqueTitles = new HashSet<>();
+
+        for(String title : titles){
+            if(title == null || title.isBlank()){
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "步骤标题不能为空");
+            }
+
+            String normalizedTitle = title.trim();
+
+            if(!uniqueTitles.add(normalizedTitle)){
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不能保存重复的步骤");
+            }
+
+            normalizedTitles.add(normalizedTitle);
+        }
+
+        return normalizedTitles;
+    }
+
+    private void ensureTitlesDoNotAlreadyExist(Long taskId, List<String> newTitles){
+        List<TaskStep> existingSteps = taskStepMapper.selectList(
+            new LambdaQueryWrapper<TaskStep>()
+                    .eq(TaskStep::getTaskId, taskId)    
+        );
+
+        Set<String> existingTitles = new HashSet<>();
+
+        for(TaskStep existingStep : existingSteps){
+            existingTitles.add(existingStep.getTitle().trim());
+        }
+
+        for(String newTitle : newTitles){
+            if(existingTitles.contains(newTitle)){
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "步骤已存在：" + newTitle);
+            }
+        }
     }
 }

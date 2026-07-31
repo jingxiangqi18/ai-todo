@@ -14,6 +14,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 
+import com.qijx.aitodo.task.dto.TaskStepBatchCreateRequest;
 import com.qijx.aitodo.task.dto.TaskStepCreateRequest;
 import com.qijx.aitodo.task.dto.TaskStepResponse;
 import com.qijx.aitodo.task.dto.TaskStepUpdateRequest;
@@ -38,6 +39,16 @@ public class TaskStepController {
         @Valid @RequestBody TaskStepCreateRequest request
     ){
         return taskStepService.createTaskStep(userId, taskId, request);
+    }
+
+    @PostMapping("/batch")
+    @ResponseStatus(HttpStatus.CREATED)
+    public List<TaskStepResponse> createStepBatch(
+        @AuthenticationPrincipal Long userId,
+        @PathVariable Long taskId,
+        @Valid @RequestBody TaskStepBatchCreateRequest request
+    ){
+        return taskStepService.createTaskStepsBatch(userId, taskId, request);
     }
 
     @GetMapping
