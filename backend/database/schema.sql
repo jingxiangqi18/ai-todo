@@ -37,3 +37,23 @@ CREATE TABLE task_steps(
     FOREIGN KEY (task_id) REFERENCES tasks(id)
     ON DELETE CASCADE
 );
+
+CREATE TABLE ai_call_logs(
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    user_id BIGINT NOT NULL,
+    feature VARCHAR(50) NOT NULL,
+    model VARCHAR(100) NOT NULL,
+    prompt_tokens INT NOT NULL DEFAULT 0,
+    completion_tokens INT NOT NULL DEFAULT 0,
+    total_tokens INT NOT NULL DEFAULT 0,
+    duration_ms BIGINT NOT NULL,
+    success TINYINT(1) NOT NULL,
+    error_message VARCHAR(300) NULL,
+    created_at DATETIME NOT NULL,
+
+    INDEX idx_ai_call_logs_user_created_at (user_id, created_at),
+    INDEX idx_ai_call_logs_feature_created_at (feature, created_at),
+
+    CONSTRAINT fk_ai_call_logs_user_id
+    FOREIGN KEY (user_id) REFERENCES users(id)
+) 

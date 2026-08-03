@@ -1,5 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import VueDraggable from 'vuedraggable'
 import {
   AlignLeft,
   BatteryMedium,
@@ -110,7 +111,8 @@ const detailPropertiesRef = ref(null)
 const aiMessageInputRef = ref(null)
 const deleteCancelButtonRef = ref(null)
 const DETAIL_PANEL_WIDTH_KEY = 'aiTodoDetailPanelWidth'
-const TASK_STEP_BATCH_LIMIT = 10
+const TASK_ORDER_STORAGE_PREFIX = 'aiTodoTaskOrder'
+const TASK_STEP_BATCH_SIZE = 10
 const DETAIL_PANEL_DEFAULT_WIDTH = 520
 const DETAIL_PANEL_MIN_WIDTH = 360
 const DETAIL_PANEL_MAX_WIDTH = 760
@@ -120,12 +122,15 @@ const detailPanelBounds = reactive({
   max: DETAIL_PANEL_MAX_WIDTH
 })
 const isDetailResizing = ref(false)
+const isTaskDragging = ref(false)
+const draggingTaskId = ref(null)
 let searchTimer
 let aiCopyTimer
 let taskStepStatsRequestId = 0
 let createStepDraftId = 0
 let detailResizeStartX = 0
 let detailResizeStartWidth = 0
+let suppressTaskClickUntil = 0
 
 const vFocus = {
   mounted(element) {
@@ -724,11 +729,6 @@ async function handleCreateTask() {
     ...(pendingStepTitle ? [pendingStepTitle] : [])
   ]
 
-  if (stepTitles.length > TASK_STEP_BATCH_LIMIT) {
-    composerError.value = `一次最多添加 ${TASK_STEP_BATCH_LIMIT} 个执行步骤。`
-    return
-  }
-
   isTaskSubmitting.value = true
 
   try {
@@ -739,24 +739,18 @@ async function handleCreateTask() {
       dueAt: due.date ? `${due.date}T${due.time}` : null
     })
 
-    const followUpRequests = [
-      ...(requestedStatus !== 'TODO'
-        ? [{ type: 'status', request: updateTaskStatus(created.id, { status: requestedStatus }) }]
-        : []),
-      ...(stepTitles.length
-        ? [{ type: 'steps', request: createTaskStepsBatch(created.id, { titles: stepTitles }) }]
-        : [])
-    ]
-    const followUpResults = await Promise.allSettled(followUpRequests.map((item) => item.request))
-    const statusResultIndex = followUpRequests.findIndex((item) => item.type === 'status')
-    const stepsResultIndex = followUpRequests.findIndex((item) => item.type === 'steps')
-    const statusResult = statusResultIndex >= 0 ? followUpResults[statusResultIndex] : null
-    const stepsResult = stepsResultIndex >= 0 ? followUpResults[stepsResultIndex] : null
-    const createdSteps = stepsResult?.status === 'fulfilled' && Array.isArray(stepsResult.value)
-      ? stepsResult.value
-      : []
+    const statusRequest = requestedStatus !== 'TODO'
+      ? updateTaskStatus(created.id, { status: requestedStatus })
+      : null
+    const [statusResult, stepBatchResult] = await Promise.all([
+      statusRequest
+        ? Promise.allSettled([statusRequest]).then(([result]) => result)
+        : Promise.resolve(null),
+      createTaskStepBatches(created.id, stepTitles)
+    ])
+    const createdSteps = stepBatchResult.createdSteps
     const failedStatus = statusResult?.status === 'rejected'
-    const failedSteps = stepsResult?.status === 'rejected'
+    const failedSteps = Boolean(stepBatchResult.error)
 
     syncTaskStepStats(created.id, createdSteps)
     resetTaskForm()
@@ -767,7 +761,9 @@ async function handleCreateTask() {
     if (failedStatus || failedSteps) {
       const failures = [
         ...(failedStatus ? [`状态未保存：${statusResult.reason?.message || '请稍后重试'}`] : []),
-        ...(failedSteps ? [`执行步骤未保存：${stepsResult.reason?.message || '请稍后重试'}`] : [])
+        ...(failedSteps
+          ? [`还有 ${stepBatchResult.unsavedStepCount} 个执行步骤未保存：${stepBatchResult.error.message || '请稍后重试'}`]
+          : [])
       ]
       errorMessage.value = `任务已创建，但${failures.join('；')}。请打开任务后补充。`
     }
@@ -775,6 +771,31 @@ async function handleCreateTask() {
     composerError.value = error.message || '创建任务失败。'
   } finally {
     isTaskSubmitting.value = false
+  }
+}
+
+async function createTaskStepBatches(taskId, titles) {
+  const createdSteps = []
+
+  for (let index = 0; index < titles.length; index += TASK_STEP_BATCH_SIZE) {
+    const batchTitles = titles.slice(index, index + TASK_STEP_BATCH_SIZE)
+
+    try {
+      const result = await createTaskStepsBatch(taskId, { titles: batchTitles })
+      createdSteps.push(...(Array.isArray(result) ? result : []))
+    } catch (error) {
+      return {
+        createdSteps,
+        error,
+        unsavedStepCount: titles.length - createdSteps.length
+      }
+    }
+  }
+
+  return {
+    createdSteps,
+    error: null,
+    unsavedStepCount: 0
   }
 }
 
@@ -795,6 +816,107 @@ async function fetchAllTaskRecords() {
   }
 
   return records
+}
+
+function getTaskOrderStorageKey() {
+  const identity = user.value?.id || user.value?.email || user.value?.username
+
+  return identity ? `${TASK_ORDER_STORAGE_PREFIX}:${identity}` : ''
+}
+
+function readStoredTaskOrder() {
+  const storageKey = getTaskOrderStorageKey()
+
+  if (!storageKey) {
+    return []
+  }
+
+  try {
+    const value = JSON.parse(localStorage.getItem(storageKey) || '[]')
+
+    return Array.isArray(value) ? value.map(String) : []
+  } catch {
+    return []
+  }
+}
+
+function applyStoredTaskOrder(source) {
+  const storedOrder = readStoredTaskOrder()
+
+  if (!storedOrder.length) {
+    return source
+  }
+
+  const taskById = new Map(source.map((task) => [String(task.id), task]))
+  const orderedIds = new Set(storedOrder)
+  const newTasks = source.filter((task) => !orderedIds.has(String(task.id)))
+  const orderedTasks = storedOrder
+    .map((taskId) => taskById.get(taskId))
+    .filter(Boolean)
+
+  return [...newTasks, ...orderedTasks]
+}
+
+function persistTaskOrder() {
+  const storageKey = getTaskOrderStorageKey()
+
+  if (!storageKey) {
+    return
+  }
+
+  try {
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify(allTasksSnapshot.value.map((task) => String(task.id)))
+    )
+  } catch {
+    // Dragging still works for the current session when storage is unavailable.
+  }
+}
+
+function commitVisibleTaskOrder(orderedTasks) {
+  const orderedIds = new Set(orderedTasks.map((task) => String(task.id)))
+  let visibleIndex = 0
+
+  allTasksSnapshot.value = allTasksSnapshot.value.map((task) => (
+    orderedIds.has(String(task.id)) ? orderedTasks[visibleIndex++] : task
+  ))
+  persistTaskOrder()
+  paginateCurrentView()
+}
+
+function handleTaskDragStart(event) {
+  isTaskDragging.value = true
+  draggingTaskId.value = event.item?.dataset.taskId || null
+}
+
+function handleTaskDragEnd(orderedTasks) {
+  commitVisibleTaskOrder(orderedTasks)
+  isTaskDragging.value = false
+  draggingTaskId.value = null
+  suppressTaskClickUntil = Date.now() + 220
+}
+
+function moveTaskWithKeyboard(task, orderedTasks, direction) {
+  const currentIndex = orderedTasks.findIndex((item) => item.id === task.id)
+  const targetIndex = currentIndex + direction
+
+  if (currentIndex < 0 || targetIndex < 0 || targetIndex >= orderedTasks.length) {
+    return
+  }
+
+  const reorderedTasks = [...orderedTasks]
+  const [movedTask] = reorderedTasks.splice(currentIndex, 1)
+  reorderedTasks.splice(targetIndex, 0, movedTask)
+  commitVisibleTaskOrder(reorderedTasks)
+}
+
+function handleTaskItemClick(task) {
+  if (isTaskDragging.value || Date.now() < suppressTaskClickUntil) {
+    return
+  }
+
+  openTaskDetail(task)
 }
 
 function filterTasksForCurrentView(source) {
@@ -881,7 +1003,7 @@ async function refreshTasks() {
   errorMessage.value = ''
 
   try {
-    allTasksSnapshot.value = await fetchAllTaskRecords()
+    allTasksSnapshot.value = applyStoredTaskOrder(await fetchAllTaskRecords())
     paginateCurrentView()
 
     void refreshTaskStepStats(tasks.value)
@@ -1893,24 +2015,19 @@ async function handleSaveAiStepDrafts() {
     return
   }
 
-  if (candidates.length > TASK_STEP_BATCH_LIMIT) {
-    aiStepDraftError.value = `一次最多保存 ${TASK_STEP_BATCH_LIMIT} 个步骤。`
-    return
-  }
-
   isAiStepDraftSaving.value = true
-  const savedDraftIds = new Set(candidates.map((draft) => draft.id))
 
   try {
-    const result = await createTaskStepsBatch(taskId, {
-      titles: candidates.map((draft) => draft.title)
-    })
-    const createdSteps = Array.isArray(result) ? result : []
+    const batchResult = await createTaskStepBatches(taskId, candidates.map((draft) => draft.title))
+    const createdSteps = batchResult.createdSteps
+    const savedDraftIds = new Set(
+      candidates.slice(0, createdSteps.length).map((draft) => draft.id)
+    )
 
-    if (selectedTask.value?.id === taskId) {
+    if (createdSteps.length && selectedTask.value?.id === taskId) {
       taskSteps.value = [...taskSteps.value, ...createdSteps]
       syncTaskStepStats(taskId, taskSteps.value)
-    } else {
+    } else if (createdSteps.length) {
       void refreshTaskStepStats([{ id: taskId }])
     }
 
@@ -1918,8 +2035,14 @@ async function handleSaveAiStepDrafts() {
       .filter((draft) => !savedDraftIds.has(draft.id))
       .map((draft) => duplicateIds.has(draft.id) ? { ...draft, selected: false } : draft)
 
-    const duplicateText = duplicateIds.size ? `，另有 ${duplicateIds.size} 条重复草稿已取消选择` : ''
-    aiStepDraftMessage.value = `已加入 ${createdSteps.length} 个执行步骤${duplicateText}。`
+    if (createdSteps.length) {
+      const duplicateText = duplicateIds.size ? `，另有 ${duplicateIds.size} 条重复草稿已取消选择` : ''
+      aiStepDraftMessage.value = `已加入 ${createdSteps.length} 个执行步骤${duplicateText}。`
+    }
+
+    if (batchResult.error) {
+      aiStepDraftError.value = `还有 ${batchResult.unsavedStepCount} 个步骤未保存：${batchResult.error.message || '请重试。'}`
+    }
   } catch (error) {
     aiStepDrafts.value = aiStepDrafts.value
       .map((draft) => duplicateIds.has(draft.id) ? { ...draft, selected: false } : draft)
@@ -2121,11 +2244,6 @@ function addCreateStep() {
   composerError.value = ''
 
   if (!title) {
-    return
-  }
-
-  if (createStepDrafts.value.length >= TASK_STEP_BATCH_LIMIT) {
-    composerError.value = `一次最多添加 ${TASK_STEP_BATCH_LIMIT} 个执行步骤。`
     return
   }
 
@@ -2480,75 +2598,116 @@ function priorityText(priority) {
           </button>
 
           <Transition name="completed-list">
-            <div
+            <VueDraggable
               v-show="!group.completed || isCompletedGroupOpen"
+              :list="group.tasks"
+              item-key="id"
+              tag="div"
               class="task-list"
               :class="{ 'completed-task-list': group.completed }"
+              :group="{ name: group.completed ? 'completed-tasks' : 'active-tasks', pull: false, put: false }"
+              handle=".task-drag-handle"
+              ghost-class="task-drag-ghost"
+              chosen-class="task-drag-chosen"
+              drag-class="task-drag-active"
+              :animation="190"
+              :delay="150"
+              :delay-on-touch-only="true"
+              :touch-start-threshold="4"
+              @start="handleTaskDragStart"
+              @end="handleTaskDragEnd(group.tasks)"
             >
-              <div v-if="!group.completed" class="task-list-columns" aria-hidden="true">
-                <span></span>
-                <span>任务</span>
-                <span>执行进度</span>
-                <span>截止时间</span>
-              </div>
-
-              <article
-                v-for="task in group.tasks"
-                :key="task.id"
-                class="task-item"
-                :class="{ selected: selectedTask?.id === task.id, done: task.status === 'DONE' }"
-                tabindex="0"
-                @click="openTaskDetail(task)"
-                @keydown.enter="openTaskDetail(task)"
-              >
-                <button
-                  class="task-check"
-                  type="button"
-                  :class="{ done: task.status === 'DONE' }"
-                  :aria-label="task.status === 'DONE' ? '恢复任务' : '完成任务'"
-                  @click.stop="toggleTaskDone(task)"
-                >
-                  <Check v-if="task.status === 'DONE'" :size="14" />
-                </button>
-                <div class="task-content">
-                  <div class="task-title-row">
-                    <h2>{{ task.title }}</h2>
-                  </div>
+              <template #header>
+                <div v-if="!group.completed" class="task-list-columns" aria-hidden="true">
+                  <span></span>
+                  <span>任务</span>
+                  <span>执行进度</span>
+                  <span>截止时间</span>
                 </div>
-                <div
-                  class="task-step-summary"
-                  :class="{
-                    loading: getTaskStepStats(task.id).loading,
-                    unavailable: getTaskStepStats(task.id).error,
-                    complete: getTaskStepStats(task.id).progress === 100
-                  }"
+              </template>
+
+              <template #item="{ element: task }">
+                <article
+                  class="task-item"
+                  :class="[
+                    `status-${task.status}`,
+                    {
+                      selected: selectedTask?.id === task.id,
+                      done: task.status === 'DONE',
+                      dragging: String(draggingTaskId) === String(task.id)
+                    }
+                  ]"
+                  :data-task-id="task.id"
+                  tabindex="0"
+                  @click="handleTaskItemClick(task)"
+                  @keydown.enter="handleTaskItemClick(task)"
                 >
-                  <div class="task-step-copy">
-                    <ListChecks :size="13" />
-                    <span>{{ taskStepListLabel(task.id) }}</span>
-                    <b v-if="!getTaskStepStats(task.id).loading && !getTaskStepStats(task.id).error">
-                      {{ getTaskStepStats(task.id).progress }}%
-                    </b>
+                  <div class="task-leading-actions" @click.stop>
+                    <button
+                      class="task-check"
+                      type="button"
+                      :class="{ done: task.status === 'DONE' }"
+                      :aria-label="task.status === 'DONE' ? '恢复任务' : '完成任务'"
+                      @click="toggleTaskDone(task)"
+                    >
+                      <Check v-if="task.status === 'DONE'" :size="14" />
+                    </button>
+                    <button
+                      class="task-drag-handle"
+                      type="button"
+                      :aria-label="`调整任务“${task.title}”的顺序`"
+                      title="拖动排序；也可使用上下方向键"
+                      @keydown.up.stop.prevent="moveTaskWithKeyboard(task, group.tasks, -1)"
+                      @keydown.down.stop.prevent="moveTaskWithKeyboard(task, group.tasks, 1)"
+                    >
+                      <GripVertical :size="15" />
+                    </button>
+                  </div>
+                  <div class="task-content">
+                    <div class="task-title-row">
+                      <h2>{{ task.title }}</h2>
+                      <span v-if="task.status !== 'DONE'" class="task-status-mark" :class="`status-${task.status}`">
+                        <Circle v-if="task.status === 'TODO'" :size="10" />
+                        <RefreshCw v-else :size="10" />
+                        {{ statusText(task.status) }}
+                      </span>
+                    </div>
                   </div>
                   <div
-                    class="task-step-track"
-                    role="progressbar"
-                    :aria-label="`${task.title}的步骤完成进度`"
-                    :aria-valuenow="getTaskStepStats(task.id).progress"
-                    aria-valuemin="0"
-                    aria-valuemax="100"
+                    class="task-step-summary"
+                    :class="{
+                      loading: getTaskStepStats(task.id).loading,
+                      unavailable: getTaskStepStats(task.id).error,
+                      complete: getTaskStepStats(task.id).progress === 100
+                    }"
                   >
-                    <span :style="{ width: `${getTaskStepStats(task.id).progress}%` }"></span>
+                    <div class="task-step-copy">
+                      <ListChecks :size="13" />
+                      <span>{{ taskStepListLabel(task.id) }}</span>
+                      <b v-if="!getTaskStepStats(task.id).loading && !getTaskStepStats(task.id).error">
+                        {{ getTaskStepStats(task.id).progress }}%
+                      </b>
+                    </div>
+                    <div
+                      class="task-step-track"
+                      role="progressbar"
+                      :aria-label="`${task.title}的步骤完成进度`"
+                      :aria-valuenow="getTaskStepStats(task.id).progress"
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                    >
+                      <span :style="{ width: `${getTaskStepStats(task.id).progress}%` }"></span>
+                    </div>
                   </div>
-                </div>
-                <div class="task-meta">
-                  <span v-if="task.dueAt" class="task-due" :class="{ overdue: isTaskOverdue(task) }">
-                    <CalendarDays :size="14" />
-                    {{ formatDueAt(task.dueAt) }}
-                  </span>
-                </div>
-              </article>
-            </div>
+                  <div class="task-meta">
+                    <span v-if="task.dueAt" class="task-due" :class="{ overdue: isTaskOverdue(task) }">
+                      <CalendarDays :size="14" />
+                      {{ formatDueAt(task.dueAt) }}
+                    </span>
+                  </div>
+                </article>
+              </template>
+            </VueDraggable>
           </Transition>
         </section>
       </div>
@@ -2987,7 +3146,7 @@ function priorityText(priority) {
                 <span class="create-section-icon steps-icon"><ListChecks :size="17" /></span>
                 <span>
                   <strong>执行步骤</strong>
-                  <small>{{ createStepDrafts.length }} / {{ TASK_STEP_BATCH_LIMIT }}</small>
+                  <small>{{ createStepDrafts.length ? `${createStepDrafts.length} 个步骤` : '尚未添加' }}</small>
                 </span>
               </div>
             </div>
@@ -3008,14 +3167,13 @@ function priorityText(priority) {
                 v-model="createStepDraft"
                 type="text"
                 maxlength="100"
-                :disabled="createStepDrafts.length >= TASK_STEP_BATCH_LIMIT"
-                :placeholder="createStepDrafts.length >= TASK_STEP_BATCH_LIMIT ? '已达到本次添加上限' : '添加一个执行步骤'"
+                placeholder="添加一个执行步骤"
                 @input="composerError = ''"
                 @keydown.enter.prevent="addCreateStep"
               />
               <button
                 type="button"
-                :disabled="!createStepDraft.trim() || createStepDrafts.length >= TASK_STEP_BATCH_LIMIT"
+                :disabled="!createStepDraft.trim()"
                 aria-label="添加执行步骤"
                 @click="addCreateStep"
               >
@@ -3206,7 +3364,7 @@ function priorityText(priority) {
                   <button
                     type="button"
                     class="ai-step-save"
-                    :disabled="isAiStepDraftSaving || !selectedAiStepDrafts.length || selectedAiStepDrafts.length > TASK_STEP_BATCH_LIMIT"
+                    :disabled="isAiStepDraftSaving || !selectedAiStepDrafts.length"
                     @click="handleSaveAiStepDrafts"
                   >
                     <Plus :size="14" />

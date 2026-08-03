@@ -6,8 +6,8 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.openai.OpenAiChatOptions;
-import com.openai.errors.OpenAIException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -21,6 +21,8 @@ import com.qijx.aitodo.task.mapper.TaskStepMapper;
 
 @Service
 public class AiAdviceService {
+    private static final String FEATURE = "TASK_ADVICE";
+
     private static final String SYSTEM_PROMPT = """
             你是一个任务安排助手
 
@@ -38,15 +40,18 @@ public class AiAdviceService {
     private final TaskMapper taskMapper;
     private final TaskStepMapper taskStepMapper;
     private final ChatClient chatClient;
+    private final AiCallLogService aiCallLogService;
 
     public AiAdviceService(
         TaskMapper taskMapper,
         TaskStepMapper taskStepMapper,
-        ChatClient.Builder chatClientBuilder
+        ChatClient.Builder chatClientBuilder,
+        AiCallLogService aiCallLogService
     ){
         this.taskMapper = taskMapper;
         this.taskStepMapper = taskStepMapper;
         this.chatClient = chatClientBuilder.build();
+        this.aiCallLogService = aiCallLogService;
     }
 
     public TaskAdviceResponse generateAdvice(Long userId, String message){
@@ -101,26 +106,35 @@ public class AiAdviceService {
                         )
                     )
                 );
-
-        String advice;
+        
+        long startedAt  = System.nanoTime();
 
         try{
-            advice = chatClient.prompt()
+            ChatResponse chatResponse = chatClient.prompt()
                     .system(SYSTEM_PROMPT)
                     .user(userPrompt)
                     .options(chatOptions)
                     .call()
-                    .content();
-            
-        }catch(OpenAIException exception){
+                    .chatResponse();
+
+            String advice = extractAdvice(chatResponse);
+
+            if(advice == null || advice.isBlank()){
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务无返回内容");
+            }
+
+            long durationMs = calculateDurationMs(startedAt);
+
+            aiCallLogService.recordSuccess(userId, FEATURE, chatResponse, durationMs);
+
+            return createResponse(advice.trim());
+        }catch(RuntimeException exception){
+            long durationMs = calculateDurationMs(startedAt);
+
+            aiCallLogService.recordFailure(userId, FEATURE, durationMs, exception);
+
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "调用AI服务失败", exception);
         }
-
-        if(advice == null || advice.isBlank()){
-                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务无返回内容");
-        }
-
-        return createResponse(advice);
     }
 
         private String buildUserPrompt(
@@ -188,5 +202,27 @@ public class AiAdviceService {
         response.setAdvice(advice);
 
         return response;
+    }
+
+    private String extractAdvice(ChatResponse chatResponse){
+        if(chatResponse == null){
+            return null;
+        }
+
+        if(chatResponse.getResult() == null){
+            return null;
+        }
+
+        if(chatResponse.getResult().getOutput() == null){
+            return null;
+        }
+
+        return chatResponse.getResult().getOutput().getText();
+    }
+
+    private long calculateDurationMs(long startedAt){
+        long elapsedNanos = System.nanoTime() - startedAt;
+
+        return elapsedNanos / 1_000_000;
     }
 }

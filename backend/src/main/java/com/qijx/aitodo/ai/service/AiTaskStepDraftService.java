@@ -1,11 +1,15 @@
 package com.qijx.aitodo.ai.service;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.ai.openai.OpenAiChatOptions;
+import org.springframework.ai.chat.client.ResponseEntity;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -19,6 +23,8 @@ import com.qijx.aitodo.task.entity.Task;
 
 @Service
 public class AiTaskStepDraftService {
+    private static final String FEATURE = "TASK_STEP_DRAFT";
+
     private static final String SYSTEM_PROMPT = """
             你是一个任务拆解助手。
 
@@ -37,11 +43,13 @@ public class AiTaskStepDraftService {
     private final TaskMapper taskMapper;
     private final TaskStepMapper taskStepMapper;
     private final ChatClient chatClient;
+    private final AiCallLogService aiCallLogService;
 
-    public AiTaskStepDraftService(TaskMapper taskMapper, TaskStepMapper taskStepMapper, ChatClient.Builder chatClientBuilder){
+    public AiTaskStepDraftService(TaskMapper taskMapper, TaskStepMapper taskStepMapper, ChatClient.Builder chatClientBuilder, AiCallLogService aiCallLogService){
         this.taskMapper = taskMapper;
         this.taskStepMapper = taskStepMapper;
         this.chatClient = chatClientBuilder.build();
+        this.aiCallLogService = aiCallLogService;
     }
 
     public TaskStepDraftResponse generateDraft(Long userId, Long taskId, String instruction){
@@ -67,23 +75,34 @@ public class AiTaskStepDraftService {
                                 )
                             )
                         );
-
-        TaskStepDraftResponse response;
+                
+        long startedAt = System.nanoTime();
 
         try{
-            response = chatClient.prompt()
-                    .system(SYSTEM_PROMPT)
-                    .user(userPrompt)
-                    .options(chatOptions)
-                    .call()
-                    .entity(TaskStepDraftResponse.class);
+            ResponseEntity<ChatResponse, TaskStepDraftResponse> result = 
+                    chatClient.prompt()
+                            .system(SYSTEM_PROMPT)
+                            .user(userPrompt)
+                            .options(chatOptions)
+                            .call()
+                            .responseEntity(TaskStepDraftResponse.class);
+
+            TaskStepDraftResponse response = result.entity();
+
+            validateAndCleanResponse(response, existingSteps);
+
+            long durationMs = calculateDurationMs(startedAt);
+
+            aiCallLogService.recordSuccess(userId, FEATURE, result.response(), durationMs);
+
+            return response;
         }catch(RuntimeException exception){
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "生成任务草稿失败", exception);
+            long durationMs = calculateDurationMs(startedAt);
+
+            aiCallLogService.recordFailure(userId, FEATURE, durationMs, exception);
+
+            throw new  ResponseStatusException(HttpStatus.BAD_GATEWAY, "生成任务草稿失败", exception);
         }
-
-        validateAndCleanResponse(response);
-
-        return response;
     }
 
     private Task findUserTask(Long userId, Long taskId){
@@ -138,19 +157,24 @@ public class AiTaskStepDraftService {
         return prompt.toString();
     }
 
-    private void validateAndCleanResponse(TaskStepDraftResponse response){
+    private void validateAndCleanResponse(TaskStepDraftResponse response, List<TaskStep> existingSteps){
         if(response == null || response.getSteps() == null){
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务未返回有效的步骤草稿");
         }
 
-        if(response.getSteps().isEmpty()){
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务返回的步骤草稿为空");
+        int stepCount = response.getSteps().size();
+
+        if(stepCount < 2 || stepCount > 8){
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务返回的步骤数量必须为2-8个");
         }
 
-        if(response.getSteps().size() > 10){
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务返回的步骤数量过多");
+        Set<String> existingTitles = new HashSet<>();
+
+        for(TaskStep existingStep : existingSteps){
+            existingTitles.add(existingStep.getTitle().trim());
         }
 
+        Set<String> generatedTitles = new  HashSet<>();
         List<String> cleanedSteps = new ArrayList<>();
 
         for(String step : response.getSteps()){
@@ -164,6 +188,20 @@ public class AiTaskStepDraftService {
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务返回的步骤标题过长");
             }
 
+            if (!generatedTitles.add(cleanedStep)) {
+                throw new ResponseStatusException(
+                    HttpStatus.BAD_GATEWAY,
+                "AI服务返回了重复步骤"
+                );
+        }
+
+        if (existingTitles.contains(cleanedStep)) {
+            throw new ResponseStatusException(
+                HttpStatus.BAD_GATEWAY,
+                "AI生成的步骤与已有步骤重复"
+            );
+        }
+
             cleanedSteps.add(cleanedStep);
         }
 
@@ -176,5 +214,11 @@ public class AiTaskStepDraftService {
         }
 
         return value.toString();
+    }
+
+    private long calculateDurationMs(long startedAt){
+        long elapsedNanos = System.nanoTime() - startedAt;
+
+        return elapsedNanos / 1_000_000;
     }
 }
