@@ -35,7 +35,7 @@ public class AiTaskStepDraftService {
             2.步骤必须具体、简短、可执行。
             3.每个步骤标题不得超过100个字符。
             4.步骤应按照合理的执行顺序排列
-            5.不要重复生成已有的步骤
+            5.如果任务本身需要重复执行相同步骤，允许生成内容相同的步骤
             6.不要修改已有的任务
             7.只生成步骤草稿，用户决定是否保存
             """;
@@ -89,7 +89,7 @@ public class AiTaskStepDraftService {
 
             TaskStepDraftResponse response = result.entity();
 
-            validateAndCleanResponse(response, existingSteps);
+            validateAndCleanResponse(response);
 
             long durationMs = calculateDurationMs(startedAt);
 
@@ -157,7 +157,7 @@ public class AiTaskStepDraftService {
         return prompt.toString();
     }
 
-    private void validateAndCleanResponse(TaskStepDraftResponse response, List<TaskStep> existingSteps){
+    private void validateAndCleanResponse(TaskStepDraftResponse response){
         if(response == null || response.getSteps() == null){
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务未返回有效的步骤草稿");
         }
@@ -168,13 +168,6 @@ public class AiTaskStepDraftService {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务返回的步骤数量必须为2-8个");
         }
 
-        Set<String> existingTitles = new HashSet<>();
-
-        for(TaskStep existingStep : existingSteps){
-            existingTitles.add(existingStep.getTitle().trim());
-        }
-
-        Set<String> generatedTitles = new  HashSet<>();
         List<String> cleanedSteps = new ArrayList<>();
 
         for(String step : response.getSteps()){
@@ -187,20 +180,6 @@ public class AiTaskStepDraftService {
             if(cleanedStep.length() > 100){
                 throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "AI服务返回的步骤标题过长");
             }
-
-            if (!generatedTitles.add(cleanedStep)) {
-                throw new ResponseStatusException(
-                    HttpStatus.BAD_GATEWAY,
-                "AI服务返回了重复步骤"
-                );
-        }
-
-        if (existingTitles.contains(cleanedStep)) {
-            throw new ResponseStatusException(
-                HttpStatus.BAD_GATEWAY,
-                "AI生成的步骤与已有步骤重复"
-            );
-        }
 
             cleanedSteps.add(cleanedStep);
         }

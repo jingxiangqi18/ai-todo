@@ -1475,6 +1475,7 @@ button:active:not(:disabled) {
 }
 
 .task-title-row h2 {
+  flex: 1 1 auto;
   min-width: 0;
   margin: 0;
   overflow: hidden;
@@ -1484,6 +1485,43 @@ button:active:not(:disabled) {
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.task-priority-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  align-items: center;
+  min-width: 20px;
+  font-size: 9px;
+  font-weight: 720;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.task-priority-mark svg {
+  flex: 0 0 auto;
+  stroke-width: 1.8;
+}
+
+.task-priority-mark.priority-LOW {
+  color: #78909b;
+}
+
+.task-priority-mark.priority-MEDIUM {
+  color: #8b7691;
+}
+
+.task-priority-mark.priority-MEDIUM svg {
+  fill: #eee7f0;
+}
+
+.task-priority-mark.priority-HIGH {
+  color: #ad606d;
+}
+
+.task-priority-mark.priority-HIGH svg {
+  fill: #f5dfe4;
 }
 
 .task-status-mark {
@@ -1530,6 +1568,10 @@ button:active:not(:disabled) {
   color: #92919d;
   text-decoration: line-through;
   text-decoration-thickness: 1px;
+}
+
+.task-item.done .task-priority-mark {
+  opacity: 0.48;
 }
 
 .task-item.done .task-content > p,
@@ -1957,7 +1999,7 @@ button:active:not(:disabled) {
 .due-presets,
 .due-editor-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 7px;
 }
 
@@ -1971,6 +2013,54 @@ button:active:not(:disabled) {
   border-radius: var(--radius-sm);
   font-size: 11px;
   cursor: pointer;
+}
+
+.due-editor-actions button {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 7px 5px;
+  color: #62677c;
+  background: #f5f3f8;
+  border-color: #e0dce8;
+  transition: color var(--duration-fast) ease-out, background var(--duration-fast) ease-out,
+    border-color var(--duration-fast) ease-out, transform var(--duration-fast) ease-out;
+}
+
+.due-editor-actions button strong,
+.due-editor-actions button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.due-editor-actions button strong {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.due-editor-actions button small {
+  color: #9691a3;
+  font-size: 8px;
+}
+
+.due-editor-actions button:hover {
+  color: #51495c;
+  background: #eeebf2;
+  border-color: #cbc4d3;
+  transform: translateY(-1px);
+}
+
+.due-editor-actions button.active {
+  color: #ffffff;
+  background: #81738a;
+  border-color: #81738a;
+  box-shadow: 0 6px 14px rgb(102 88 111 / 16%);
+}
+
+.due-editor-actions button.active small {
+  color: rgb(255 255 255 / 75%);
 }
 
 .due-field {
@@ -2713,6 +2803,7 @@ button:active:not(:disabled) {
   width: 100%;
   min-width: 0;
   height: 100vh;
+  height: 100dvh;
   padding: 0;
   overflow: hidden;
   background: #fdfcfd;
@@ -2725,9 +2816,31 @@ button:active:not(:disabled) {
   flex-direction: column;
   width: 100%;
   height: 100%;
+  min-height: 0;
+  max-height: 100dvh;
   padding: 22px 20px 0;
-  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  overscroll-behavior-y: contain;
+  scrollbar-color: #aaa3b6 transparent;
   scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.detail-panel-scroll::-webkit-scrollbar {
+  width: 7px;
+}
+
+.detail-panel-scroll::-webkit-scrollbar-thumb {
+  background: #aaa3b6;
+  border: 2px solid #fdfcfd;
+  border-radius: 4px;
+}
+
+.detail-panel-scroll::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .detail-resize-handle {
@@ -3094,26 +3207,61 @@ button:active:not(:disabled) {
 
 .create-due-presets {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
 
 .create-due-presets button {
-  min-height: 36px;
-  color: #5f7181;
-  background: #eef2f5;
-  border: 1px solid #dce3e8;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  min-height: 54px;
+  padding: 8px 6px;
+  color: #61677a;
+  background: #f4f3f8;
+  border: 1px solid #dfdce8;
   border-radius: var(--radius-md);
-  font-size: 11px;
-  font-weight: 650;
   cursor: pointer;
+  transition: color var(--duration-fast) ease-out, background var(--duration-fast) ease-out,
+    border-color var(--duration-fast) ease-out, transform var(--duration-fast) ease-out,
+    box-shadow var(--duration-fast) ease-out;
+}
+
+.create-due-presets button strong,
+.create-due-presets button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.create-due-presets button strong {
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.create-due-presets button small {
+  color: #9691a3;
+  font-size: 8px;
+  font-weight: 550;
 }
 
 .create-due-presets button:hover {
-  color: #4e586f;
-  background: #e9eaf2;
-  border-color: #d4d4e2;
+  color: #50495b;
+  background: #eeebf2;
+  border-color: #cbc4d3;
+  transform: translateY(-1px);
+}
+
+.create-due-presets button.active {
+  color: #ffffff;
+  background: #81738a;
+  border-color: #81738a;
+  box-shadow: 0 7px 16px rgb(102 88 111 / 17%);
+}
+
+.create-due-presets button.active small {
+  color: rgb(255 255 255 / 75%);
 }
 
 .create-date-grid,
@@ -4138,6 +4286,59 @@ button:active:not(:disabled) {
   gap: 10px;
 }
 
+.due-custom-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 10px;
+  color: #676a79;
+  background: rgb(255 255 255 / 72%);
+  border: 1px solid #dedde6;
+  border-radius: var(--radius-md);
+  font-size: 10px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: color var(--duration-fast) ease-out, background var(--duration-fast) ease-out,
+    border-color var(--duration-fast) ease-out;
+}
+
+.due-custom-toggle > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.due-custom-toggle > svg {
+  transition: transform var(--duration-fast) ease-out;
+}
+
+.due-custom-toggle:hover,
+.due-custom-toggle.open {
+  color: #51495c;
+  background: #f2eff5;
+  border-color: #cec8d7;
+}
+
+.due-custom-toggle.open > svg {
+  transform: rotate(180deg);
+}
+
+.due-custom-fields {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  background: rgb(245 244 248 / 80%);
+  border: 1px solid #e3e0e8;
+  border-radius: var(--radius-md);
+}
+
+.due-custom-fields .create-time-grid,
+.due-custom-fields .time-part-grid {
+  margin-top: 0;
+}
+
 .date-part-grid,
 .time-part-grid {
   display: grid;
@@ -4585,6 +4786,10 @@ button:active:not(:disabled) {
     max-width: 146px;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .task-priority-mark > span {
+    display: none;
   }
 
   .task-skeleton {

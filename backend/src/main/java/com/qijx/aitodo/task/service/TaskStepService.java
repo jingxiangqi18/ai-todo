@@ -2,9 +2,7 @@ package com.qijx.aitodo.task.service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -55,8 +53,6 @@ public class TaskStepService {
         ensureTaskBelongsToUser(userId, taskId);
 
         List<String> noramlizedTitles = normalizeAndValidateBatchTitles(request.getTitles());
-
-        ensureTitlesDoNotAlreadyExist(taskId, noramlizedTitles);
 
         LocalDateTime now = LocalDateTime.now();
 
@@ -181,7 +177,6 @@ public class TaskStepService {
         }
 
         List<String> normalizedTitles = new ArrayList<>();
-        Set<String> uniqueTitles = new HashSet<>();
 
         for(String title : titles){
             if(title == null || title.isBlank()){
@@ -190,32 +185,13 @@ public class TaskStepService {
 
             String normalizedTitle = title.trim();
 
-            if(!uniqueTitles.add(normalizedTitle)){
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不能保存重复的步骤");
+            if(normalizedTitle.length() > 100){
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "步骤标题不能超过100个字符");
             }
 
             normalizedTitles.add(normalizedTitle);
         }
 
         return normalizedTitles;
-    }
-
-    private void ensureTitlesDoNotAlreadyExist(Long taskId, List<String> newTitles){
-        List<TaskStep> existingSteps = taskStepMapper.selectList(
-            new LambdaQueryWrapper<TaskStep>()
-                    .eq(TaskStep::getTaskId, taskId)    
-        );
-
-        Set<String> existingTitles = new HashSet<>();
-
-        for(TaskStep existingStep : existingSteps){
-            existingTitles.add(existingStep.getTitle().trim());
-        }
-
-        for(String newTitle : newTitles){
-            if(existingTitles.contains(newTitle)){
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "步骤已存在：" + newTitle);
-            }
-        }
     }
 }

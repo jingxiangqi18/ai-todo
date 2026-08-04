@@ -113,6 +113,7 @@ const deleteCancelButtonRef = ref(null)
 const DETAIL_PANEL_WIDTH_KEY = 'aiTodoDetailPanelWidth'
 const TASK_ORDER_STORAGE_PREFIX = 'aiTodoTaskOrder'
 const TASK_STEP_BATCH_SIZE = 10
+const END_OF_DAY_TIME = '23:59'
 const DETAIL_PANEL_DEFAULT_WIDTH = 520
 const DETAIL_PANEL_MIN_WIDTH = 360
 const DETAIL_PANEL_MAX_WIDTH = 760
@@ -165,6 +166,7 @@ const createDueParts = reactive({
 const composerError = ref('')
 const createStepDraft = ref('')
 const createStepDrafts = ref([])
+const isCreateCustomDueOpen = ref(false)
 
 const editForm = reactive({
   title: '',
@@ -181,6 +183,7 @@ const editDueParts = reactive({
   hour: '',
   minute: ''
 })
+const isEditCustomDueOpen = ref(false)
 
 const listFilters = reactive({
   status: '',
@@ -337,6 +340,23 @@ const views = computed(() => [
 ])
 
 const todayKey = computed(() => toLocalDateKey(new Date()))
+const duePresetOptions = computed(() => [
+  {
+    value: 'today',
+    label: '今天完成',
+    meta: '今天 · 23:59'
+  },
+  {
+    value: 'tomorrow',
+    label: '明天完成',
+    meta: '明天 · 23:59'
+  },
+  {
+    value: 'next-week',
+    label: '下周内',
+    meta: `${formatShortDate(getNextWeekEndDate())} · 23:59`
+  }
+])
 const currentViewTaskSnapshot = computed(() => filterTasksForCurrentView(allTasksSnapshot.value))
 const currentViewStats = computed(() => createTaskStats(currentViewTaskSnapshot.value))
 const visibleTasks = computed(() => tasks.value)
@@ -706,6 +726,7 @@ async function handleCreateTask() {
 
   if (due.error) {
     composerError.value = due.error
+    isCreateCustomDueOpen.value = true
     return
   }
 
@@ -1367,14 +1388,40 @@ function formatTimeLabel(value) {
   return value || '默认 23:59'
 }
 
-function setCreateDueToday() {
-  setCreateDueParts(todayKey.value, resolveCreateDueValues().time || '18:00')
+function formatShortDate(date) {
+  return `${date.getMonth() + 1}月${date.getDate()}日`
 }
 
-function setCreateDueTomorrow() {
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  setCreateDueParts(toLocalDateKey(tomorrow), resolveCreateDueValues().time || '18:00')
+function getNextWeekEndDate() {
+  const nextWeekEnd = new Date()
+  const currentDay = nextWeekEnd.getDay()
+  const daysUntilNextWeekEnd = currentDay === 0 ? 7 : 14 - currentDay
+  nextWeekEnd.setDate(nextWeekEnd.getDate() + daysUntilNextWeekEnd)
+  return nextWeekEnd
+}
+
+function resolveDuePresetDate(preset) {
+  const date = new Date()
+
+  if (preset === 'tomorrow') {
+    date.setDate(date.getDate() + 1)
+  } else if (preset === 'next-week') {
+    return getNextWeekEndDate()
+  }
+
+  return date
+}
+
+function applyCreateDuePreset(preset) {
+  setCreateDueParts(toLocalDateKey(resolveDuePresetDate(preset)), END_OF_DAY_TIME)
+  isCreateCustomDueOpen.value = false
+}
+
+function isCreateDuePresetActive(preset) {
+  const due = resolveCreateDueValues()
+  return !due.error
+    && due.date === toLocalDateKey(resolveDuePresetDate(preset))
+    && due.time === END_OF_DAY_TIME
 }
 
 function clearCreateDue() {
@@ -1382,6 +1429,19 @@ function clearCreateDue() {
   taskForm.dueTime = ''
   setCreateDueParts('', '')
   composerError.value = ''
+}
+
+function toggleCreateCustomDue() {
+  isCreateCustomDueOpen.value = !isCreateCustomDueOpen.value
+
+  if (isCreateCustomDueOpen.value) {
+    nextTick(() => {
+      document.querySelector('.create-due-section .due-custom-fields')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest'
+      })
+    })
+  }
 }
 
 function updateCreateDatePart(part, value) {
@@ -1415,14 +1475,29 @@ function resolveCreateDueValues() {
   return resolveDuePartValues(createDueParts)
 }
 
-function setEditDueToday() {
-  setEditDueParts(todayKey.value, resolveEditDueValues().time || '18:00')
+function applyEditDuePreset(preset) {
+  setEditDueParts(toLocalDateKey(resolveDuePresetDate(preset)), END_OF_DAY_TIME)
+  isEditCustomDueOpen.value = false
 }
 
-function setEditDueTomorrow() {
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  setEditDueParts(toLocalDateKey(tomorrow), resolveEditDueValues().time || '18:00')
+function isEditDuePresetActive(preset) {
+  const due = resolveEditDueValues()
+  return !due.error
+    && due.date === toLocalDateKey(resolveDuePresetDate(preset))
+    && due.time === END_OF_DAY_TIME
+}
+
+function toggleEditCustomDue() {
+  isEditCustomDueOpen.value = !isEditCustomDueOpen.value
+
+  if (isEditCustomDueOpen.value) {
+    nextTick(() => {
+      detailPropertiesRef.value?.querySelector('.due-custom-fields')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest'
+      })
+    })
+  }
 }
 
 function updateEditDatePart(part, value) {
@@ -1521,6 +1596,7 @@ async function openTaskDetail(task) {
   }
   selectedTask.value = task
   expandedDetailSection.value = null
+  isEditCustomDueOpen.value = false
   taskSteps.value = []
   stepDraft.value = ''
   resetAiStepDraft()
@@ -1578,6 +1654,13 @@ async function handleUpdateTask() {
   if (due.error) {
     detailError.value = due.error
     expandedDetailSection.value = 'due'
+    isEditCustomDueOpen.value = true
+    nextTick(() => {
+      detailPropertiesRef.value?.querySelector('.due-item')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest'
+      })
+    })
     return
   }
 
@@ -1722,6 +1805,7 @@ function splitDueAt(value) {
 function closeTaskDetail() {
   selectedTask.value = null
   expandedDetailSection.value = null
+  isEditCustomDueOpen.value = false
   taskSteps.value = []
   stepDraft.value = ''
   resetAiStepDraft()
@@ -2236,6 +2320,7 @@ function resetTaskForm() {
   setCreateDueParts('', '')
   createStepDraft.value = ''
   createStepDrafts.value = []
+  isCreateCustomDueOpen.value = false
   composerError.value = ''
 }
 
@@ -2666,6 +2751,15 @@ function priorityText(priority) {
                   <div class="task-content">
                     <div class="task-title-row">
                       <h2>{{ task.title }}</h2>
+                      <span
+                        class="task-priority-mark"
+                        :class="`priority-${task.priority || 'MEDIUM'}`"
+                        :title="`${priorityText(task.priority)}优先级`"
+                        :aria-label="`${priorityText(task.priority)}优先级`"
+                      >
+                        <Flag :size="11" />
+                        <span>{{ priorityText(task.priority) }}</span>
+                      </span>
                       <span v-if="task.status !== 'DONE'" class="task-status-mark" :class="`status-${task.status}`">
                         <Circle v-if="task.status === 'TODO'" :size="10" />
                         <RefreshCw v-else :size="10" />
@@ -3078,66 +3172,89 @@ function priorityText(priority) {
             </div>
 
             <div class="create-due-presets">
-              <button type="button" @click="setCreateDueToday">今天傍晚</button>
-              <button type="button" @click="setCreateDueTomorrow">明天傍晚</button>
+              <button
+                v-for="preset in duePresetOptions"
+                :key="preset.value"
+                type="button"
+                :class="{ active: isCreateDuePresetActive(preset.value) }"
+                @click="applyCreateDuePreset(preset.value)"
+              >
+                <strong>{{ preset.label }}</strong>
+                <small>{{ preset.meta }}</small>
+              </button>
             </div>
 
-            <div class="date-part-grid create-date-grid" aria-label="新任务截止日期">
-              <label>
-                <span>年</span>
-                <input
-                  :value="createDateParts.year"
-                  inputmode="numeric"
-                  maxlength="4"
-                  placeholder="2026"
-                  @input="updateCreateDatePart('year', $event.target.value)"
-                />
-              </label>
-              <label>
-                <span>月</span>
-                <input
-                  :value="createDateParts.month"
-                  inputmode="numeric"
-                  maxlength="2"
-                  placeholder="07"
-                  @input="updateCreateDatePart('month', $event.target.value)"
-                />
-              </label>
-              <label>
-                <span>日</span>
-                <input
-                  :value="createDateParts.day"
-                  inputmode="numeric"
-                  maxlength="2"
-                  placeholder="31"
-                  @input="updateCreateDatePart('day', $event.target.value)"
-                />
-              </label>
-            </div>
+            <button
+              class="due-custom-toggle"
+              type="button"
+              :class="{ open: isCreateCustomDueOpen }"
+              :aria-expanded="isCreateCustomDueOpen"
+              @click="toggleCreateCustomDue"
+            >
+              <span><Clock3 :size="15" /> 自定义日期与时间</span>
+              <ChevronDown :size="15" />
+            </button>
 
-            <div class="time-part-grid create-time-grid" aria-label="新任务截止时间">
-              <label>
-                <span>时</span>
-                <input
-                  :value="createTimeParts.hour"
-                  inputmode="numeric"
-                  maxlength="2"
-                  placeholder="18"
-                  @input="updateCreateTimePart('hour', $event.target.value)"
-                />
-              </label>
-              <i>:</i>
-              <label>
-                <span>分</span>
-                <input
-                  :value="createTimeParts.minute"
-                  inputmode="numeric"
-                  maxlength="2"
-                  placeholder="00"
-                  @input="updateCreateTimePart('minute', $event.target.value)"
-                />
-              </label>
-            </div>
+            <Transition name="property-reveal">
+              <div v-if="isCreateCustomDueOpen" class="due-custom-fields">
+                <div class="date-part-grid create-date-grid" aria-label="新任务截止日期">
+                  <label>
+                    <span>年</span>
+                    <input
+                      :value="createDateParts.year"
+                      inputmode="numeric"
+                      maxlength="4"
+                      placeholder="2026"
+                      @input="updateCreateDatePart('year', $event.target.value)"
+                    />
+                  </label>
+                  <label>
+                    <span>月</span>
+                    <input
+                      :value="createDateParts.month"
+                      inputmode="numeric"
+                      maxlength="2"
+                      placeholder="07"
+                      @input="updateCreateDatePart('month', $event.target.value)"
+                    />
+                  </label>
+                  <label>
+                    <span>日</span>
+                    <input
+                      :value="createDateParts.day"
+                      inputmode="numeric"
+                      maxlength="2"
+                      placeholder="31"
+                      @input="updateCreateDatePart('day', $event.target.value)"
+                    />
+                  </label>
+                </div>
+
+                <div class="time-part-grid create-time-grid" aria-label="新任务截止时间">
+                  <label>
+                    <span>时</span>
+                    <input
+                      :value="createTimeParts.hour"
+                      inputmode="numeric"
+                      maxlength="2"
+                      placeholder="23"
+                      @input="updateCreateTimePart('hour', $event.target.value)"
+                    />
+                  </label>
+                  <i>:</i>
+                  <label>
+                    <span>分</span>
+                    <input
+                      :value="createTimeParts.minute"
+                      inputmode="numeric"
+                      maxlength="2"
+                      placeholder="59"
+                      @input="updateCreateTimePart('minute', $event.target.value)"
+                    />
+                  </label>
+                </div>
+              </div>
+            </Transition>
           </section>
 
           <section class="create-form-section create-steps-section">
@@ -3556,66 +3673,89 @@ function priorityText(priority) {
             <Transition name="property-reveal">
               <div v-if="expandedDetailSection === 'due'" class="property-editor compact-due-editor">
                 <div class="due-editor-actions">
-                  <button type="button" @click="setEditDueToday">今天傍晚</button>
-                  <button type="button" @click="setEditDueTomorrow">明天傍晚</button>
+                  <button
+                    v-for="preset in duePresetOptions"
+                    :key="preset.value"
+                    type="button"
+                    :class="{ active: isEditDuePresetActive(preset.value) }"
+                    @click="applyEditDuePreset(preset.value)"
+                  >
+                    <strong>{{ preset.label }}</strong>
+                    <small>{{ preset.meta }}</small>
+                  </button>
                 </div>
 
-                <div class="date-part-grid" aria-label="编辑截止日期">
-                  <label>
-                    <span>年</span>
-                    <input
-                      :value="editDateParts.year"
-                      inputmode="numeric"
-                      maxlength="4"
-                      placeholder="2026"
-                      @input="updateEditDatePart('year', $event.target.value)"
-                    />
-                  </label>
-                  <label>
-                    <span>月</span>
-                    <input
-                      :value="editDateParts.month"
-                      inputmode="numeric"
-                      maxlength="2"
-                      placeholder="07"
-                      @input="updateEditDatePart('month', $event.target.value)"
-                    />
-                  </label>
-                  <label>
-                    <span>日</span>
-                    <input
-                      :value="editDateParts.day"
-                      inputmode="numeric"
-                      maxlength="2"
-                      placeholder="08"
-                      @input="updateEditDatePart('day', $event.target.value)"
-                    />
-                  </label>
-                </div>
+                <button
+                  class="due-custom-toggle"
+                  type="button"
+                  :class="{ open: isEditCustomDueOpen }"
+                  :aria-expanded="isEditCustomDueOpen"
+                  @click="toggleEditCustomDue"
+                >
+                  <span><Clock3 :size="15" /> 自定义日期与时间</span>
+                  <ChevronDown :size="15" />
+                </button>
 
-                <div class="time-part-grid" aria-label="编辑截止时间">
-                  <label>
-                    <span>时</span>
-                    <input
-                      :value="editTimeParts.hour"
-                      inputmode="numeric"
-                      maxlength="2"
-                      placeholder="18"
-                      @input="updateEditTimePart('hour', $event.target.value)"
-                    />
-                  </label>
-                  <i>:</i>
-                  <label>
-                    <span>分</span>
-                    <input
-                      :value="editTimeParts.minute"
-                      inputmode="numeric"
-                      maxlength="2"
-                      placeholder="00"
-                      @input="updateEditTimePart('minute', $event.target.value)"
-                    />
-                  </label>
-                </div>
+                <Transition name="property-reveal">
+                  <div v-if="isEditCustomDueOpen" class="due-custom-fields">
+                    <div class="date-part-grid" aria-label="编辑截止日期">
+                      <label>
+                        <span>年</span>
+                        <input
+                          :value="editDateParts.year"
+                          inputmode="numeric"
+                          maxlength="4"
+                          placeholder="2026"
+                          @input="updateEditDatePart('year', $event.target.value)"
+                        />
+                      </label>
+                      <label>
+                        <span>月</span>
+                        <input
+                          :value="editDateParts.month"
+                          inputmode="numeric"
+                          maxlength="2"
+                          placeholder="07"
+                          @input="updateEditDatePart('month', $event.target.value)"
+                        />
+                      </label>
+                      <label>
+                        <span>日</span>
+                        <input
+                          :value="editDateParts.day"
+                          inputmode="numeric"
+                          maxlength="2"
+                          placeholder="08"
+                          @input="updateEditDatePart('day', $event.target.value)"
+                        />
+                      </label>
+                    </div>
+
+                    <div class="time-part-grid" aria-label="编辑截止时间">
+                      <label>
+                        <span>时</span>
+                        <input
+                          :value="editTimeParts.hour"
+                          inputmode="numeric"
+                          maxlength="2"
+                          placeholder="23"
+                          @input="updateEditTimePart('hour', $event.target.value)"
+                        />
+                      </label>
+                      <i>:</i>
+                      <label>
+                        <span>分</span>
+                        <input
+                          :value="editTimeParts.minute"
+                          inputmode="numeric"
+                          maxlength="2"
+                          placeholder="59"
+                          @input="updateEditTimePart('minute', $event.target.value)"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </Transition>
               </div>
             </Transition>
           </section>
