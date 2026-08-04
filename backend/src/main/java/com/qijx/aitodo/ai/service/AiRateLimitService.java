@@ -2,10 +2,12 @@ package com.qijx.aitodo.ai.service;
 
 import java.time.Duration;
 
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.dao.DataAccessException;
+
+import com.qijx.aitodo.common.redis.RedisAtomicRateLimiter;
 
 @Service
 public class AiRateLimitService {
@@ -13,29 +15,23 @@ public class AiRateLimitService {
     private static final long MAX_REQUESTS = 5;
     private static final Duration WINDOW = Duration.ofMinutes(1);
 
-    private final StringRedisTemplate stringRedisTemplate;
+    private final RedisAtomicRateLimiter redisAtomicRateLimiter;
 
-    public AiRateLimitService(StringRedisTemplate stringRedisTemplate){
-        this.stringRedisTemplate = stringRedisTemplate;
+    public AiRateLimitService(RedisAtomicRateLimiter redisAtomicRateLimiter){
+        this.redisAtomicRateLimiter = redisAtomicRateLimiter;
     }
 
     public void checkRateLimit(Long userId){
         String key = KEY_PREFIX + userId;
 
-        Long count = stringRedisTemplate
-                .opsForValue()
-                .increment(key);
+        try{
+            boolean allowed = redisAtomicRateLimiter.isAllowed(key, MAX_REQUESTS, WINDOW);
 
-        if(count == null){
-            throw new IllegalStateException("AI限流计数失败");
-        }
-
-        if(count.longValue() == 1L){
-            stringRedisTemplate.expire(key, WINDOW);
-        }
-
-        if(count.longValue() > MAX_REQUESTS){
-            throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "AI请求过于频繁，请1分钟后再试");
+            if(!allowed){
+                throw new ResponseStatusException(HttpStatus.TOO_MANY_REQUESTS, "AI请求过于频繁，请1分钟后再试");
+            }
+        }catch(DataAccessException | IllegalStateException exception){
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "AI限流服务暂时不可用", exception);
         }
     }
 }

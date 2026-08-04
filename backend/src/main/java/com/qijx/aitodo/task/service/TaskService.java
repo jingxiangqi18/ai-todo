@@ -1,6 +1,7 @@
 package com.qijx.aitodo.task.service;
 
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -8,9 +9,13 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessException;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+
 import com.qijx.aitodo.task.dto.TaskCreateRequest;
 import com.qijx.aitodo.task.dto.TaskPageResponse;
 import com.qijx.aitodo.task.dto.TaskResponse;
@@ -28,6 +33,7 @@ public class TaskService {
     private final TaskMapper taskMapper;
     private static final String TASK_STATS_CACHE_KEY_PREFIX = "task:stats:";
     private static final Duration TASK_STATS_CACHE_TTL = Duration.ofMinutes(1);
+    private static final Logger LOGGER = LoggerFactory.getLogger(TaskService.class);
 
     private final StringRedisTemplate stringRedisTemplate;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -196,21 +202,18 @@ public class TaskService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "任务不存在");
         }
 
-        invalidateTaskStatsCache(userId);
-
         taskMapper.deleteById(taskId);
+
+        invalidateTaskStatsCache(userId);
     }
 
     public TaskStatsResponse getTaskStats(Long userId){
         String cacheKey = TASK_STATS_CACHE_KEY_PREFIX + userId;
-        String cachedJson = stringRedisTemplate.opsForValue().get(cacheKey);
 
-        if(cachedJson != null){
-            try{
-                return objectMapper.readValue(cachedJson, TaskStatsResponse.class);
-            } catch(JsonProcessingException exception){
-                stringRedisTemplate.delete(cacheKey);
-            }
+        TaskStatsResponse cachedResponse = readTaskStatsFromCache(cacheKey);
+
+        if(cachedResponse != null){
+            return cachedResponse;
         }
 
         LocalDateTime now = LocalDateTime.now();
@@ -218,7 +221,7 @@ public class TaskService {
         LocalDateTime tomorrowStart = todayStart.plusDays(1);
 
         TaskStatsResponse response = new TaskStatsResponse();
-
+        
         response.setTotal(countByUserId(userId));
         response.setTodo(countByStatus(userId, "TODO"));
         response.setInProgress(countByStatus(userId, "IN_PROGRESS"));
@@ -347,16 +350,45 @@ public class TaskService {
                 TASK_STATS_CACHE_TTL
             );
         }catch(JsonProcessingException exception){
-            throw new IllegalStateException(
-                "任务统计缓存序列化失败",
-                exception
-            );
+            LOGGER.warn("任务统计结果序列化失败，本次不写入缓存");
+        }catch(DataAccessException exception){
+            LOGGER.warn("Redis写入失败，本次只返回数据库结果");
         }
     }
 
     private void invalidateTaskStatsCache(Long userId){
         String cacheKey = TASK_STATS_CACHE_KEY_PREFIX + userId;
 
-        stringRedisTemplate.delete(cacheKey);
+        invalidateTaskStatsCacheByKey(cacheKey);
+    }
+
+    private void invalidateTaskStatsCacheByKey(String cacheKey){
+        try{
+            stringRedisTemplate.delete(cacheKey);
+        }catch(DataAccessException exception){
+            LOGGER.warn("Redis缓存删除失败，将依靠TTL自动失效");
+        }
+    }
+
+    private TaskStatsResponse readTaskStatsFromCache(String cacheKey){
+        try{
+            String cachedJson = stringRedisTemplate.opsForValue().get(cacheKey);
+
+            if(cachedJson == null){
+                return null;
+            }
+
+            return objectMapper.readValue(cachedJson, TaskStatsResponse.class);
+        }catch(JsonProcessingException exception){
+            LOGGER.warn("任务统计缓存无法解析，改为查询数据库");
+
+            invalidateTaskStatsCacheByKey(cacheKey);
+
+            return null;
+        }catch(DataAccessException exception){
+            LOGGER.warn("Redis读取失败，任务统计改为查询数据库");
+
+            return null;
+        }
     }
 }
