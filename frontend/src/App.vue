@@ -6,6 +6,7 @@ import {
   BatteryMedium,
   Bell,
   BrainCircuit,
+  Building2,
   CalendarDays,
   Check,
   ChevronDown,
@@ -14,7 +15,9 @@ import {
   Circle,
   Clock3,
   Copy,
+  Crown,
   Flag,
+  FolderPlus,
   GripVertical,
   History,
   ListChecks,
@@ -31,11 +34,13 @@ import {
   Sparkles,
   Star,
   Trash2,
+  UsersRound,
   WandSparkles,
   X,
   UserRound
 } from '@lucide/vue'
 import {
+  createGroup,
   createTaskStep,
   createTaskStepsBatch,
   createTask,
@@ -43,12 +48,15 @@ import {
   deleteTask,
   generateTaskStepDrafts,
   getCurrentUser,
+  getGroup,
   getTask,
   getTaskAdvice,
   getTaskReminders,
   getTaskStats,
   listTaskSteps,
   listTasks,
+  listGroupMembers,
+  listGroups,
   loginUser,
   registerUser,
   updateTaskStep,
@@ -94,6 +102,16 @@ const editingStepTitle = ref('')
 const stepDeleteCandidateId = ref(null)
 const reminders = ref([])
 const allTasksSnapshot = ref([])
+const groups = ref([])
+const selectedGroup = ref(null)
+const groupMembers = ref([])
+const isGroupListLoading = ref(false)
+const isGroupDetailLoading = ref(false)
+const isGroupComposerOpen = ref(false)
+const isGroupSubmitting = ref(false)
+const groupListError = ref('')
+const groupDetailError = ref('')
+const groupFormError = ref('')
 const detailError = ref('')
 const isDetailLoading = ref(false)
 const isDetailSaving = ref(false)
@@ -129,6 +147,7 @@ let searchTimer
 let aiCopyTimer
 let taskStepStatsRequestId = 0
 let createStepDraftId = 0
+let groupDetailRequestId = 0
 let detailResizeStartX = 0
 let detailResizeStartWidth = 0
 let suppressTaskClickUntil = 0
@@ -145,6 +164,11 @@ const authForm = reactive({
   username: '',
   email: '',
   password: ''
+})
+
+const groupForm = reactive({
+  name: '',
+  description: ''
 })
 
 const taskForm = reactive({
@@ -286,6 +310,11 @@ const isAiMessageValid = computed(() => {
   return message.length > 0 && message.length <= 1000
 })
 const aiAdviceBlocks = computed(() => parseAdvice(aiAdvice.value))
+const isGroupFormValid = computed(() => {
+  const nameLength = groupForm.name.trim().length
+  return nameLength > 0 && nameLength <= 100 && groupForm.description.length <= 500
+})
+const selectedGroupRole = computed(() => groupRoleLabel(selectedGroup.value?.currentUserRole))
 
 const aiPromptOptions = [
   {
@@ -476,7 +505,7 @@ onMounted(async () => {
 
   try {
     user.value = await getCurrentUser()
-    await refreshTasks()
+    await Promise.all([refreshTasks(), refreshGroups()])
   } catch (error) {
     localStorage.removeItem('aiTodoToken')
     errorMessage.value = error.message || '登录状态已失效，请重新登录。'
@@ -620,6 +649,11 @@ function handleDocumentKeydown(event) {
     return
   }
 
+  if (isGroupComposerOpen.value && !isGroupSubmitting.value) {
+    closeGroupComposer()
+    return
+  }
+
   if (selectedTask.value) {
     closeTaskDetail()
   }
@@ -692,7 +726,7 @@ async function handleAuthSubmit() {
 
       localStorage.setItem('aiTodoToken', result.token)
       user.value = result.user
-      await refreshTasks()
+      await Promise.all([refreshTasks(), refreshGroups()])
     } else {
       await registerUser({
         username: authForm.username.trim(),
@@ -1046,6 +1080,39 @@ async function refreshTasks() {
   }
 }
 
+function normalizeGroup(group) {
+  if (!group || typeof group !== 'object') {
+    return group
+  }
+
+  const responseRole = group.currentUserRole || group.currentUsserRole || group.role
+  const inferredRole = String(group.ownerId) === String(user.value?.id) ? 'OWNER' : 'MEMBER'
+
+  return {
+    ...group,
+    currentUserRole: responseRole || inferredRole
+  }
+}
+
+async function refreshGroups() {
+  isGroupListLoading.value = true
+  groupListError.value = ''
+
+  try {
+    const result = await listGroups()
+    groups.value = Array.isArray(result) ? result.map(normalizeGroup) : []
+
+    if (selectedGroup.value) {
+      const current = groups.value.find((group) => String(group.id) === String(selectedGroup.value.id))
+      selectedGroup.value = current || selectedGroup.value
+    }
+  } catch (error) {
+    groupListError.value = error.message || '工作组加载失败，请稍后重试。'
+  } finally {
+    isGroupListLoading.value = false
+  }
+}
+
 async function refreshTaskStats() {
   try {
     Object.assign(taskStats, await getTaskStats())
@@ -1071,12 +1138,19 @@ function switchAuthMode(mode) {
 
 function logout() {
   closeAiAdvisor()
+  groupDetailRequestId += 1
   localStorage.removeItem('aiTodoToken')
   user.value = null
   tasks.value = []
   allTasksSnapshot.value = []
   taskStepStatsById.clear()
   reminders.value = []
+  groups.value = []
+  selectedGroup.value = null
+  groupMembers.value = []
+  groupListError.value = ''
+  groupDetailError.value = ''
+  isGroupComposerOpen.value = false
   Object.assign(taskStats, {
     total: 0,
     todo: 0,
@@ -1117,6 +1191,12 @@ function confirmDialogAction() {
 }
 
 async function selectView(key) {
+  groupDetailRequestId += 1
+  isGroupDetailLoading.value = false
+  selectedGroup.value = null
+  groupMembers.value = []
+  groupDetailError.value = ''
+  closeGroupComposer()
   activeView.value = key
   isSidebarOpen.value = false
   taskPage.page = 1
@@ -2284,7 +2364,154 @@ function cleanAdviceText(text) {
     .replace(/`([^`]+)`/g, '$1')
 }
 
+function groupRoleLabel(role) {
+  const labels = {
+    OWNER: '负责人',
+    MEMBER: '成员'
+  }
+
+  return labels[role] || '成员'
+}
+
+function groupInitial(name) {
+  return String(name || '组').trim().slice(0, 1).toLocaleUpperCase() || '组'
+}
+
+function formatGroupDate(value) {
+  const date = parseLocalDateTime(value)
+
+  if (!date) {
+    return '暂无记录'
+  }
+
+  return date.toLocaleDateString('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  })
+}
+
+async function selectGroup(group) {
+  const normalizedGroup = normalizeGroup(group)
+  const requestId = ++groupDetailRequestId
+
+  if (selectedTask.value) {
+    closeTaskDetail()
+  }
+
+  if (isComposerOpen.value) {
+    closeComposer()
+  }
+
+  if (isGroupComposerOpen.value) {
+    closeGroupComposer()
+  }
+
+  selectedGroup.value = normalizedGroup
+  groupMembers.value = []
+  groupDetailError.value = ''
+  isGroupDetailLoading.value = true
+  isSidebarOpen.value = false
+  isFilterOpen.value = false
+  isReminderOpen.value = false
+
+  const [detailResult, membersResult] = await Promise.allSettled([
+    getGroup(normalizedGroup.id),
+    listGroupMembers(normalizedGroup.id)
+  ])
+
+  if (requestId !== groupDetailRequestId) {
+    return
+  }
+
+  if (detailResult.status === 'fulfilled') {
+    const detail = normalizeGroup(detailResult.value)
+    selectedGroup.value = detail
+    groups.value = [
+      detail,
+      ...groups.value.filter((item) => String(item.id) !== String(detail.id))
+    ]
+  } else {
+    groupDetailError.value = detailResult.reason?.message || '工作组详情加载失败。'
+  }
+
+  if (membersResult.status === 'fulfilled') {
+    groupMembers.value = Array.isArray(membersResult.value) ? membersResult.value : []
+  } else {
+    const message = membersResult.reason?.message || '成员列表加载失败。'
+    groupDetailError.value = groupDetailError.value
+      ? `${groupDetailError.value}；${message}`
+      : message
+  }
+
+  isGroupDetailLoading.value = false
+}
+
+function resetGroupForm() {
+  groupForm.name = ''
+  groupForm.description = ''
+  groupFormError.value = ''
+}
+
+function openGroupComposer() {
+  if (selectedTask.value) {
+    closeTaskDetail()
+  }
+
+  if (isComposerOpen.value) {
+    closeComposer()
+  }
+
+  resetGroupForm()
+  isGroupComposerOpen.value = true
+  isSidebarOpen.value = false
+}
+
+function closeGroupComposer() {
+  if (isGroupSubmitting.value) {
+    return
+  }
+
+  isGroupComposerOpen.value = false
+  resetGroupForm()
+}
+
+async function handleCreateGroup() {
+  groupFormError.value = ''
+
+  if (!isGroupFormValid.value) {
+    groupFormError.value = '请填写 1 到 100 个字符的工作组名称，并将描述控制在 500 个字符内。'
+    return
+  }
+
+  isGroupSubmitting.value = true
+
+  try {
+    const created = normalizeGroup(await createGroup({
+      name: groupForm.name.trim(),
+      description: groupForm.description.trim() || null
+    }))
+
+    groups.value = [
+      created,
+      ...groups.value.filter((group) => String(group.id) !== String(created.id))
+    ]
+    isGroupComposerOpen.value = false
+    resetGroupForm()
+    await selectGroup(created)
+  } catch (error) {
+    groupFormError.value = error.message || '工作组创建失败，请稍后重试。'
+  } finally {
+    isGroupSubmitting.value = false
+  }
+}
+
 function openComposer() {
+  groupDetailRequestId += 1
+  isGroupDetailLoading.value = false
+  selectedGroup.value = null
+  groupMembers.value = []
+  closeGroupComposer()
   if (selectedTask.value) {
     closeTaskDetail()
   }
@@ -2467,7 +2694,7 @@ function priorityText(priority) {
   <main
     v-else
     class="todo-app"
-    :class="{ 'has-detail': selectedTask || isComposerOpen, 'is-detail-resizing': isDetailResizing }"
+    :class="{ 'has-detail': selectedTask || isComposerOpen || isGroupComposerOpen, 'is-detail-resizing': isDetailResizing }"
     :style="{ '--detail-panel-width': `${detailPanelWidth}px` }"
   >
     <button
@@ -2497,20 +2724,66 @@ function priorityText(priority) {
         </div>
       </div>
 
-      <nav class="nav-list" aria-label="任务视图">
-        <button
-          v-for="view in views"
-          :key="view.key"
-          type="button"
-          :class="{ active: activeView === view.key }"
-          :aria-current="activeView === view.key ? 'page' : undefined"
-          @click="selectView(view.key)"
-        >
-          <component :is="view.icon" :size="18" />
-          <span>{{ view.label }}</span>
-          <em>{{ view.count }}</em>
-        </button>
-      </nav>
+      <div class="sidebar-scroll-area">
+        <nav class="nav-list" aria-label="任务视图">
+          <button
+            v-for="view in views"
+            :key="view.key"
+            type="button"
+            :class="{ active: !selectedGroup && activeView === view.key }"
+            :aria-current="!selectedGroup && activeView === view.key ? 'page' : undefined"
+            @click="selectView(view.key)"
+          >
+            <component :is="view.icon" :size="18" />
+            <span>{{ view.label }}</span>
+            <em>{{ view.count }}</em>
+          </button>
+        </nav>
+
+        <section class="sidebar-groups" aria-labelledby="sidebar-groups-title">
+          <header class="sidebar-group-heading">
+            <span id="sidebar-groups-title">工作组</span>
+            <button type="button" aria-label="创建工作组" title="创建工作组" @click="openGroupComposer">
+              <FolderPlus :size="15" />
+            </button>
+          </header>
+
+          <div v-if="isGroupListLoading" class="group-nav-loading" aria-label="正在加载工作组">
+            <span></span>
+            <span></span>
+          </div>
+
+          <div v-else-if="groups.length" class="group-nav-list">
+            <button
+              v-for="group in groups"
+              :key="group.id"
+              type="button"
+              class="group-nav-item"
+              :class="{ active: String(selectedGroup?.id) === String(group.id) }"
+              :aria-current="String(selectedGroup?.id) === String(group.id) ? 'page' : undefined"
+              :title="group.name"
+              @click="selectGroup(group)"
+            >
+              <span class="group-nav-avatar">{{ groupInitial(group.name) }}</span>
+              <span class="group-nav-copy">{{ group.name }}</span>
+              <Crown v-if="group.currentUserRole === 'OWNER'" class="group-nav-role" :size="13" />
+              <UsersRound v-else class="group-nav-role" :size="13" />
+            </button>
+          </div>
+
+          <button v-else-if="!groupListError" class="group-nav-empty" type="button" @click="openGroupComposer">
+            <Plus :size="14" />
+            <span>创建工作组</span>
+          </button>
+
+          <div v-if="groupListError" class="group-nav-error">
+            <span>{{ groupListError }}</span>
+            <button type="button" aria-label="重新加载工作组" title="重试" @click="refreshGroups">
+              <RefreshCw :size="13" />
+            </button>
+          </div>
+        </section>
+      </div>
 
       <div class="sidebar-footer">
         <button class="ghost-button" type="button" @click="openLogoutConfirm">
@@ -2520,7 +2793,96 @@ function priorityText(priority) {
       </div>
     </aside>
 
-    <section class="task-board">
+    <section class="task-board" :class="{ 'group-board': selectedGroup }">
+      <template v-if="selectedGroup">
+        <header class="board-header group-board-header">
+          <div class="board-title">
+            <button class="mobile-menu-button" type="button" aria-label="打开导航" @click="isSidebarOpen = true">
+              <Menu :size="20" />
+            </button>
+            <p class="date-line">协作工作组</p>
+            <h1>{{ selectedGroup.name }}</h1>
+          </div>
+
+          <div class="board-primary-actions group-primary-actions">
+            <button class="primary-button group-create-trigger" type="button" @click="openGroupComposer">
+              <FolderPlus :size="17" />
+              <span>新建工作组</span>
+            </button>
+          </div>
+        </header>
+
+        <div class="board-summary group-summary" aria-label="工作组概览">
+          <span><b>{{ groupMembers.length }}</b> 位成员</span>
+          <span class="group-role-summary">
+            <Crown v-if="selectedGroup.currentUserRole === 'OWNER'" :size="13" />
+            <UsersRound v-else :size="13" />
+            {{ selectedGroupRole }}
+          </span>
+          <span>创建于 {{ formatGroupDate(selectedGroup.createdAt) }}</span>
+        </div>
+
+        <div v-if="groupDetailError" class="notice error list-error" role="alert">
+          <span>{{ groupDetailError }}</span>
+          <button type="button" @click="selectGroup(selectedGroup)">重试</button>
+        </div>
+
+        <div v-if="isGroupDetailLoading" class="group-workspace group-workspace-loading" aria-label="正在加载工作组">
+          <div class="group-profile-skeleton"><span></span><i></i><i></i></div>
+          <div class="group-member-skeleton" v-for="index in 3" :key="index"><span></span><i></i></div>
+        </div>
+
+        <section v-else class="group-workspace">
+          <header class="group-profile-band">
+            <span class="group-profile-mark">{{ groupInitial(selectedGroup.name) }}</span>
+            <div class="group-profile-copy">
+              <span>WORKSPACE</span>
+              <h2>{{ selectedGroup.name }}</h2>
+              <p>{{ selectedGroup.description || '这个工作组暂时没有填写描述。' }}</p>
+            </div>
+            <span class="group-role-badge" :class="{ owner: selectedGroup.currentUserRole === 'OWNER' }">
+              <Crown v-if="selectedGroup.currentUserRole === 'OWNER'" :size="14" />
+              <UsersRound v-else :size="14" />
+              {{ selectedGroupRole }}
+            </span>
+          </header>
+
+          <div class="group-workspace-divider"></div>
+
+          <section class="group-members-section">
+            <header>
+              <div>
+                <span>成员</span>
+                <strong>{{ groupMembers.length }}</strong>
+              </div>
+              <small>按加入时间排列</small>
+            </header>
+
+            <div v-if="groupMembers.length" class="group-member-list">
+              <article v-for="member in groupMembers" :key="member.userId" class="group-member-row">
+                <span class="group-member-avatar">{{ groupInitial(member.username) }}</span>
+                <div>
+                  <strong>{{ member.username }}</strong>
+                  <small>{{ String(member.userId) === String(selectedGroup.ownerId) ? '工作组创建者' : '工作组成员' }}</small>
+                </div>
+                <span class="group-member-role" :class="{ owner: member.role === 'OWNER' }">
+                  <Crown v-if="member.role === 'OWNER'" :size="13" />
+                  <UsersRound v-else :size="13" />
+                  {{ groupRoleLabel(member.role) }}
+                </span>
+                <time>{{ formatGroupDate(member.joinedAt) }}加入</time>
+              </article>
+            </div>
+
+            <div v-else class="group-members-empty">
+              <UsersRound :size="28" />
+              <span>暂无成员信息</span>
+            </div>
+          </section>
+        </section>
+      </template>
+
+      <template v-else>
       <header class="board-header">
         <div class="board-title">
           <button class="mobile-menu-button" type="button" aria-label="打开导航" @click="isSidebarOpen = true">
@@ -2840,6 +3202,7 @@ function priorityText(priority) {
           <ChevronDown :size="15" />
         </label>
       </div>
+      </template>
 
       <Transition name="ai-overlay">
         <div v-if="isAiAdvisorOpen" class="ai-advisor-overlay" @click.self="closeAiAdvisor">
@@ -3047,6 +3410,90 @@ function priorityText(priority) {
         </Transition>
       </Teleport>
     </section>
+
+    <aside v-if="isGroupComposerOpen" class="detail-panel create-panel group-create-panel">
+      <div
+        class="detail-resize-handle"
+        role="separator"
+        aria-label="调整工作组创建栏宽度"
+        aria-orientation="vertical"
+        :aria-valuemin="detailPanelBounds.min"
+        :aria-valuemax="detailPanelBounds.max"
+        :aria-valuenow="detailPanelWidth"
+        tabindex="0"
+        title="拖动调整创建栏宽度，双击恢复默认"
+        @pointerdown="startDetailResize"
+        @dblclick="resetDetailPanelWidth"
+        @keydown="handleDetailResizeKeydown"
+      >
+        <GripVertical :size="15" />
+        <span v-if="isDetailResizing">{{ detailPanelWidth }} px</span>
+      </div>
+
+      <div class="detail-panel-scroll create-panel-scroll">
+        <header class="detail-header create-panel-header">
+          <div class="detail-heading-copy">
+            <p>创建工作组</p>
+            <span>新的协作空间</span>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            aria-label="关闭创建工作组"
+            :disabled="isGroupSubmitting"
+            @click="closeGroupComposer"
+          >
+            <X :size="18" />
+          </button>
+        </header>
+
+        <form class="create-detail-form group-create-form" @submit.prevent="handleCreateGroup">
+          <div class="group-create-intro">
+            <span><Building2 :size="22" /></span>
+            <div>
+              <strong>建立工作组</strong>
+              <p>名称和描述会展示给工作组成员。</p>
+            </div>
+          </div>
+
+          <label class="create-title-field group-name-field">
+            <span>工作组名称</span>
+            <input
+              v-focus
+              v-model="groupForm.name"
+              type="text"
+              maxlength="100"
+              placeholder="例如：课程项目组"
+              @input="groupFormError = ''"
+            />
+            <small>{{ groupForm.name.length }} / 100</small>
+          </label>
+
+          <label class="group-description-field">
+            <span>工作组描述</span>
+            <textarea
+              v-model="groupForm.description"
+              maxlength="500"
+              rows="7"
+              placeholder="记录工作组的目标、范围或协作约定"
+              @input="groupFormError = ''"
+            ></textarea>
+            <small>{{ groupForm.description.length }} / 500</small>
+          </label>
+
+          <p v-if="groupFormError" class="notice error create-panel-error" role="alert">{{ groupFormError }}</p>
+
+          <footer class="create-panel-actions">
+            <button type="button" :disabled="isGroupSubmitting" @click="closeGroupComposer">取消</button>
+            <button class="primary-button" type="submit" :disabled="isGroupSubmitting || !isGroupFormValid">
+              <RefreshCw v-if="isGroupSubmitting" class="spin-icon" :size="16" />
+              <FolderPlus v-else :size="17" />
+              <span>{{ isGroupSubmitting ? '创建中...' : '创建工作组' }}</span>
+            </button>
+          </footer>
+        </form>
+      </div>
+    </aside>
 
     <aside v-if="isComposerOpen" class="detail-panel create-panel">
       <div

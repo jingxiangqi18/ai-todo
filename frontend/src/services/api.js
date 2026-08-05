@@ -284,3 +284,22 @@ export function generateTaskStepDrafts(taskId, payload) {
     body: JSON.stringify(payload)
   })
 }
+
+export function createGroup(payload) {
+  return request('/groups', {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function listGroups() {
+  return request('/groups')
+}
+
+export function getGroup(groupId) {
+  return request(`/groups/${groupId}`)
+}
+
+export function listGroupMembers(groupId) {
+  return request(`/groups/${groupId}/members`)
+}
