@@ -20,6 +20,7 @@ import {
   FolderPlus,
   GripVertical,
   History,
+  Inbox,
   ListChecks,
   ListTodo,
   LogOut,
@@ -34,13 +35,16 @@ import {
   Sparkles,
   Star,
   Trash2,
+  UserPlus,
   UsersRound,
   WandSparkles,
   X,
   UserRound
 } from '@lucide/vue'
 import {
+  acceptGroupInvitation,
   createGroup,
+  createGroupInvitation,
   createTaskStep,
   createTaskStepsBatch,
   createTask,
@@ -54,10 +58,13 @@ import {
   getTaskReminders,
   getTaskStats,
   listTaskSteps,
+  listPendingGroupInvitations,
   listTasks,
   listGroupMembers,
   listGroups,
+  leaveGroup,
   loginUser,
+  rejectGroupInvitation,
   registerUser,
   updateTaskStep,
   updateTask,
@@ -83,7 +90,9 @@ const isSidebarOpen = ref(false)
 const isAiAdvisorOpen = ref(false)
 const deleteCandidate = ref(null)
 const isLogoutConfirmOpen = ref(false)
+const groupLeaveCandidate = ref(null)
 const isTaskDeleting = ref(false)
+const isGroupLeaving = ref(false)
 const deleteDialogError = ref('')
 const selectedTask = ref(null)
 const expandedDetailSection = ref(null)
@@ -112,6 +121,21 @@ const isGroupSubmitting = ref(false)
 const groupListError = ref('')
 const groupDetailError = ref('')
 const groupFormError = ref('')
+const isGroupInviteOpen = ref(false)
+const isGroupInviteSubmitting = ref(false)
+const invitationAccount = ref('')
+const invitationError = ref('')
+const invitationMessage = ref('')
+const latestInvitation = ref(null)
+const pendingInvitations = ref([])
+const isInvitationCenterOpen = ref(false)
+const isInvitationListLoading = ref(false)
+const invitationListError = ref('')
+const acceptingInvitationId = ref(null)
+const rejectingInvitationId = ref(null)
+const rejectConfirmationId = ref(null)
+const invitationActionMessage = ref('')
+const acceptedInvitationGroup = ref(null)
 const detailError = ref('')
 const isDetailLoading = ref(false)
 const isDetailSaving = ref(false)
@@ -126,6 +150,8 @@ const stepPendingIds = reactive(new Set())
 const filterMenuRef = ref(null)
 const reminderMenuRef = ref(null)
 const detailPropertiesRef = ref(null)
+const groupInvitePanelRef = ref(null)
+const invitationCenterCloseRef = ref(null)
 const aiMessageInputRef = ref(null)
 const deleteCancelButtonRef = ref(null)
 const DETAIL_PANEL_WIDTH_KEY = 'aiTodoDetailPanelWidth'
@@ -315,6 +341,12 @@ const isGroupFormValid = computed(() => {
   return nameLength > 0 && nameLength <= 100 && groupForm.description.length <= 500
 })
 const selectedGroupRole = computed(() => groupRoleLabel(selectedGroup.value?.currentUserRole))
+const canInviteGroupMember = computed(() => selectedGroup.value?.currentUserRole === 'OWNER')
+const isInvitationValid = computed(() => {
+  const accountLength = invitationAccount.value.trim().length
+  return accountLength > 0 && accountLength <= 100
+})
+const pendingInvitationCount = computed(() => pendingInvitations.value.length)
 
 const aiPromptOptions = [
   {
@@ -389,7 +421,55 @@ const duePresetOptions = computed(() => [
 const currentViewTaskSnapshot = computed(() => filterTasksForCurrentView(allTasksSnapshot.value))
 const currentViewStats = computed(() => createTaskStats(currentViewTaskSnapshot.value))
 const visibleTasks = computed(() => tasks.value)
-const isConfirmationDialogOpen = computed(() => Boolean(deleteCandidate.value) || isLogoutConfirmOpen.value)
+const isGroupLeaveConfirmOpen = computed(() => Boolean(groupLeaveCandidate.value))
+const isConfirmationDialogOpen = computed(() => (
+  Boolean(deleteCandidate.value) || isLogoutConfirmOpen.value || isGroupLeaveConfirmOpen.value
+))
+const isConfirmationPending = computed(() => isTaskDeleting.value || isGroupLeaving.value)
+const confirmationDialogContent = computed(() => {
+  if (isLogoutConfirmOpen.value) {
+    return {
+      kind: 'logout',
+      eyebrow: 'SIGN OUT',
+      title: '退出当前账号？',
+      description: '退出后将清除本机的登录状态，你的任务数据仍会保留在账户中。',
+      warning: '重新登录后可继续管理任务',
+      confirmLabel: '退出登录',
+      busyLabel: '退出登录',
+      icon: LogOut,
+      warningIcon: LogOut
+    }
+  }
+
+  if (isGroupLeaveConfirmOpen.value) {
+    return {
+      kind: 'leave-group',
+      eyebrow: 'LEAVE WORKSPACE',
+      title: '退出这个工作组？',
+      description: `退出后，你将无法继续访问“${groupLeaveCandidate.value?.name || '该工作组'}”的成员信息。`,
+      warning: '再次加入需要负责人重新邀请',
+      confirmLabel: '确认退出',
+      busyLabel: '正在退出',
+      icon: LogOut,
+      warningIcon: UsersRound
+    }
+  }
+
+  return {
+    kind: 'delete-task',
+    eyebrow: 'DELETE TASK',
+    title: '删除这个任务？',
+    description: `“${deleteCandidate.value?.title || '该任务'}”将从任务列表中永久移除。`,
+    warning: '此操作无法撤销',
+    confirmLabel: '确认删除',
+    busyLabel: '正在删除',
+    icon: Trash2,
+    warningIcon: History
+  }
+})
+const isInvitationOperationPending = computed(() => Boolean(
+  acceptingInvitationId.value || rejectingInvitationId.value
+))
 const shouldSeparateCompletedTasks = computed(() => (
   activeView.value === 'all' && listFilters.status !== 'DONE'
 ))
@@ -505,7 +585,7 @@ onMounted(async () => {
 
   try {
     user.value = await getCurrentUser()
-    await Promise.all([refreshTasks(), refreshGroups()])
+    await Promise.all([refreshTasks(), refreshGroups(), refreshPendingInvitations()])
   } catch (error) {
     localStorage.removeItem('aiTodoToken')
     errorMessage.value = error.message || '登录状态已失效，请重新登录。'
@@ -639,8 +719,23 @@ function handleDocumentKeydown(event) {
     return
   }
 
+  if (isInvitationCenterOpen.value && rejectConfirmationId.value && !isInvitationOperationPending.value) {
+    rejectConfirmationId.value = null
+    return
+  }
+
+  if (isInvitationCenterOpen.value && !isInvitationOperationPending.value) {
+    closeInvitationCenter()
+    return
+  }
+
   if (isAiAdvisorOpen.value) {
     closeAiAdvisor()
+    return
+  }
+
+  if (isGroupInviteOpen.value && !isGroupInviteSubmitting.value) {
+    closeGroupInvite()
     return
   }
 
@@ -662,7 +757,7 @@ function handleDocumentKeydown(event) {
 function syncBodyModalState() {
   document.body.classList.toggle(
     'modal-open',
-    isAiAdvisorOpen.value || isConfirmationDialogOpen.value
+    isAiAdvisorOpen.value || isConfirmationDialogOpen.value || isInvitationCenterOpen.value
   )
 }
 
@@ -704,6 +799,11 @@ function handleDocumentPointerDown(event) {
     expandedDetailSection.value = null
     stepDeleteCandidateId.value = null
   }
+
+
+  if (isGroupInviteOpen.value && groupInvitePanelRef.value && !path.includes(groupInvitePanelRef.value)) {
+    closeGroupInvite()
+  }
 }
 
 async function handleAuthSubmit() {
@@ -726,7 +826,7 @@ async function handleAuthSubmit() {
 
       localStorage.setItem('aiTodoToken', result.token)
       user.value = result.user
-      await Promise.all([refreshTasks(), refreshGroups()])
+      await Promise.all([refreshTasks(), refreshGroups(), refreshPendingInvitations()])
     } else {
       await registerUser({
         username: authForm.username.trim(),
@@ -1113,6 +1213,23 @@ async function refreshGroups() {
   }
 }
 
+async function refreshPendingInvitations(showLoading = false) {
+  if (showLoading) {
+    isInvitationListLoading.value = true
+  }
+
+  invitationListError.value = ''
+
+  try {
+    const result = await listPendingGroupInvitations()
+    pendingInvitations.value = Array.isArray(result) ? result : []
+  } catch (error) {
+    invitationListError.value = error.message || '工作组邀请加载失败，请稍后重试。'
+  } finally {
+    isInvitationListLoading.value = false
+  }
+}
+
 async function refreshTaskStats() {
   try {
     Object.assign(taskStats, await getTaskStats())
@@ -1138,6 +1255,17 @@ function switchAuthMode(mode) {
 
 function logout() {
   closeAiAdvisor()
+  resetGroupInvitation()
+  isInvitationCenterOpen.value = false
+  pendingInvitations.value = []
+  invitationListError.value = ''
+  acceptingInvitationId.value = null
+  rejectingInvitationId.value = null
+  rejectConfirmationId.value = null
+  invitationActionMessage.value = ''
+  acceptedInvitationGroup.value = null
+  groupLeaveCandidate.value = null
+  isGroupLeaving.value = false
   groupDetailRequestId += 1
   localStorage.removeItem('aiTodoToken')
   user.value = null
@@ -1187,6 +1315,10 @@ function confirmDialogAction() {
     return
   }
 
+  if (isGroupLeaveConfirmOpen.value) {
+    return confirmLeaveGroup()
+  }
+
   return confirmDeleteTask()
 }
 
@@ -1196,6 +1328,7 @@ async function selectView(key) {
   selectedGroup.value = null
   groupMembers.value = []
   groupDetailError.value = ''
+  resetGroupInvitation()
   closeGroupComposer()
   activeView.value = key
   isSidebarOpen.value = false
@@ -1787,12 +1920,13 @@ async function openDeleteConfirm() {
 }
 
 function closeConfirmationDialog() {
-  if (isTaskDeleting.value) {
+  if (isConfirmationPending.value) {
     return
   }
 
   deleteCandidate.value = null
   isLogoutConfirmOpen.value = false
+  groupLeaveCandidate.value = null
   deleteDialogError.value = ''
   syncBodyModalState()
 }
@@ -2391,9 +2525,238 @@ function formatGroupDate(value) {
   })
 }
 
+function formatInvitationDate(value) {
+  const date = parseLocalDateTime(value)
+
+  if (!date) {
+    return '刚刚收到'
+  }
+
+  return date.toLocaleString('zh-CN', {
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  })
+}
+
+async function openInvitationCenter() {
+  acceptedInvitationGroup.value = null
+  rejectConfirmationId.value = null
+  invitationActionMessage.value = ''
+  isInvitationCenterOpen.value = true
+  isSidebarOpen.value = false
+  isFilterOpen.value = false
+  isReminderOpen.value = false
+  syncBodyModalState()
+
+  await nextTick()
+  invitationCenterCloseRef.value?.focus()
+  await refreshPendingInvitations(true)
+}
+
+function closeInvitationCenter() {
+  if (isInvitationOperationPending.value) {
+    return
+  }
+
+  isInvitationCenterOpen.value = false
+  acceptedInvitationGroup.value = null
+  rejectConfirmationId.value = null
+  invitationActionMessage.value = ''
+  syncBodyModalState()
+}
+
+async function handleAcceptInvitation(invitation) {
+  if (!invitation?.id || isInvitationOperationPending.value) {
+    return
+  }
+
+  invitationListError.value = ''
+  invitationActionMessage.value = ''
+  rejectConfirmationId.value = null
+  acceptingInvitationId.value = invitation.id
+
+  try {
+    const acceptedGroup = normalizeGroup(await acceptGroupInvitation(invitation.id))
+
+    pendingInvitations.value = pendingInvitations.value.filter(
+      (item) => String(item.id) !== String(invitation.id)
+    )
+    groups.value = [
+      acceptedGroup,
+      ...groups.value.filter((group) => String(group.id) !== String(acceptedGroup.id))
+    ]
+    acceptedInvitationGroup.value = acceptedGroup
+  } catch (error) {
+    invitationListError.value = error.message || '接受邀请失败，请稍后重试。'
+  } finally {
+    acceptingInvitationId.value = null
+  }
+}
+
+function requestInvitationRejection(invitationId) {
+  if (!invitationId || isInvitationOperationPending.value) {
+    return
+  }
+
+  rejectConfirmationId.value = invitationId
+  invitationListError.value = ''
+  invitationActionMessage.value = ''
+}
+
+function cancelInvitationRejection() {
+  if (rejectingInvitationId.value) {
+    return
+  }
+
+  rejectConfirmationId.value = null
+}
+
+async function handleRejectInvitation(invitation) {
+  if (!invitation?.id || isInvitationOperationPending.value) {
+    return
+  }
+
+  invitationListError.value = ''
+  invitationActionMessage.value = ''
+  rejectingInvitationId.value = invitation.id
+
+  try {
+    await rejectGroupInvitation(invitation.id)
+    pendingInvitations.value = pendingInvitations.value.filter(
+      (item) => String(item.id) !== String(invitation.id)
+    )
+    rejectConfirmationId.value = null
+    invitationActionMessage.value = `已拒绝“${invitation.groupName || '该工作组'}”的邀请。`
+  } catch (error) {
+    invitationListError.value = error.message || '拒绝邀请失败，请稍后重试。'
+  } finally {
+    rejectingInvitationId.value = null
+  }
+}
+
+async function openAcceptedInvitationGroup() {
+  const group = acceptedInvitationGroup.value
+
+  if (!group) {
+    return
+  }
+
+  closeInvitationCenter()
+  await selectGroup(group)
+}
+
+function resetGroupInvitation() {
+  isGroupInviteOpen.value = false
+  invitationAccount.value = ''
+  invitationError.value = ''
+  invitationMessage.value = ''
+  latestInvitation.value = null
+}
+
+function toggleGroupInvite() {
+  if (!canInviteGroupMember.value || isGroupInviteSubmitting.value) {
+    return
+  }
+
+  if (isGroupInviteOpen.value) {
+    closeGroupInvite()
+    return
+  }
+
+  invitationAccount.value = ''
+  invitationError.value = ''
+  invitationMessage.value = ''
+  latestInvitation.value = null
+  isGroupInviteOpen.value = true
+}
+
+function closeGroupInvite() {
+  if (isGroupInviteSubmitting.value) {
+    return
+  }
+
+  resetGroupInvitation()
+}
+
+async function handleCreateInvitation() {
+  invitationError.value = ''
+  invitationMessage.value = ''
+
+  if (!selectedGroup.value || !canInviteGroupMember.value || !isInvitationValid.value) {
+    invitationError.value = '请输入不超过 100 个字符的用户名或邮箱。'
+    return
+  }
+
+  isGroupInviteSubmitting.value = true
+
+  try {
+    const invitation = await createGroupInvitation(selectedGroup.value.id, {
+      account: invitationAccount.value.trim()
+    })
+
+    latestInvitation.value = invitation
+    invitationAccount.value = ''
+    invitationMessage.value = `已向 ${invitation.inviteeName || '该用户'} 发送邀请，等待对方处理。`
+  } catch (error) {
+    latestInvitation.value = null
+    invitationError.value = error.message || '邀请发送失败，请稍后重试。'
+  } finally {
+    isGroupInviteSubmitting.value = false
+  }
+}
+
+async function openGroupLeaveConfirm() {
+  if (!selectedGroup.value || selectedGroup.value.currentUserRole !== 'MEMBER') {
+    return
+  }
+
+  closeGroupInvite()
+  groupLeaveCandidate.value = {
+    id: selectedGroup.value.id,
+    name: selectedGroup.value.name
+  }
+  deleteDialogError.value = ''
+  syncBodyModalState()
+
+  await nextTick()
+  deleteCancelButtonRef.value?.focus()
+}
+
+async function confirmLeaveGroup() {
+  const group = groupLeaveCandidate.value
+
+  if (!group || isGroupLeaving.value) {
+    return
+  }
+
+  deleteDialogError.value = ''
+  isGroupLeaving.value = true
+
+  try {
+    await leaveGroup(group.id)
+  } catch (error) {
+    deleteDialogError.value = error.message || '退出工作组失败，请稍后重试。'
+    isGroupLeaving.value = false
+    return
+  }
+
+  groups.value = groups.value.filter((item) => String(item.id) !== String(group.id))
+  selectedGroup.value = null
+  groupMembers.value = []
+  groupLeaveCandidate.value = null
+  isGroupLeaving.value = false
+  syncBodyModalState()
+  await selectView('all')
+}
+
 async function selectGroup(group) {
   const normalizedGroup = normalizeGroup(group)
   const requestId = ++groupDetailRequestId
+
+  resetGroupInvitation()
 
   if (selectedTask.value) {
     closeTaskDetail()
@@ -2718,7 +3081,7 @@ function priorityText(priority) {
         <div class="avatar">
           <UserRound :size="20" />
         </div>
-        <div>
+        <div class="account-copy">
           <strong>{{ user.username }}</strong>
           <span>{{ user.email }}</span>
         </div>
@@ -2743,9 +3106,22 @@ function priorityText(priority) {
         <section class="sidebar-groups" aria-labelledby="sidebar-groups-title">
           <header class="sidebar-group-heading">
             <span id="sidebar-groups-title">工作组</span>
-            <button type="button" aria-label="创建工作组" title="创建工作组" @click="openGroupComposer">
-              <FolderPlus :size="15" />
-            </button>
+            <div class="sidebar-group-actions">
+              <button
+                class="sidebar-group-invitation-button"
+                :class="{ attention: pendingInvitationCount > 0 }"
+                type="button"
+                :aria-label="pendingInvitationCount ? `${pendingInvitationCount} 个待处理工作组邀请` : '查看工作组邀请'"
+                title="协作邀请"
+                @click="openInvitationCenter"
+              >
+                <Inbox :size="15" />
+                <b v-if="pendingInvitationCount">{{ pendingInvitationCount > 99 ? '99+' : pendingInvitationCount }}</b>
+              </button>
+              <button type="button" aria-label="创建工作组" title="创建工作组" @click="openGroupComposer">
+                <FolderPlus :size="15" />
+              </button>
+            </div>
           </header>
 
           <div v-if="isGroupListLoading" class="group-nav-loading" aria-label="正在加载工作组">
@@ -2793,12 +3169,156 @@ function priorityText(priority) {
       </div>
     </aside>
 
+    <Transition name="invitation-drawer">
+      <div
+        v-if="isInvitationCenterOpen"
+        class="invitation-drawer-overlay"
+        @click.self="closeInvitationCenter"
+      >
+        <section
+          class="invitation-drawer"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="invitation-center-title"
+        >
+          <header class="invitation-drawer-header">
+            <div>
+              <span>WORKSPACE INVITES</span>
+              <h2 id="invitation-center-title">协作邀请</h2>
+            </div>
+            <button
+              ref="invitationCenterCloseRef"
+              class="icon-button"
+              type="button"
+              :disabled="isInvitationOperationPending"
+              aria-label="关闭协作邀请"
+              @click="closeInvitationCenter"
+            >
+              <X :size="19" />
+            </button>
+          </header>
+
+          <div class="invitation-drawer-summary">
+            <span class="invitation-summary-icon"><UsersRound :size="18" /></span>
+            <div>
+              <strong>{{ invitationListError ? '邀请暂时无法读取' : `${pendingInvitationCount} 个待处理邀请` }}</strong>
+              <span>{{ invitationListError ? '请重试以获取最新邀请' : '加入后，工作组会显示在你的侧栏中' }}</span>
+            </div>
+          </div>
+
+          <div class="invitation-drawer-content">
+            <div v-if="acceptedInvitationGroup" class="invitation-accepted" role="status">
+              <span><Check :size="17" /></span>
+              <div>
+                <strong>已加入 {{ acceptedInvitationGroup.name }}</strong>
+                <small>成员身份已经同步</small>
+              </div>
+              <button type="button" @click="openAcceptedInvitationGroup">
+                打开工作组
+                <ChevronRight :size="15" />
+              </button>
+            </div>
+
+            <div v-if="invitationActionMessage" class="invitation-action-notice" role="status">
+              <Check :size="15" />
+              <span>{{ invitationActionMessage }}</span>
+            </div>
+
+            <div v-if="invitationListError" class="invitation-list-error" role="alert">
+              <span>{{ invitationListError }}</span>
+              <button type="button" :disabled="isInvitationListLoading" @click="refreshPendingInvitations(true)">
+                重试
+              </button>
+            </div>
+
+            <div v-if="isInvitationListLoading" class="invitation-list-loading" aria-label="正在加载协作邀请">
+              <div v-for="index in 3" :key="index">
+                <span></span>
+                <i></i>
+                <i></i>
+              </div>
+            </div>
+
+            <div v-else-if="!invitationListError && pendingInvitations.length" class="invitation-list">
+              <article v-for="invitation in pendingInvitations" :key="invitation.id" class="invitation-card">
+                <div class="invitation-card-mark">{{ groupInitial(invitation.groupName) }}</div>
+                <div class="invitation-card-copy">
+                  <span>工作组邀请</span>
+                  <h3>{{ invitation.groupName }}</h3>
+                  <p><b>{{ invitation.inviterName }}</b> 邀请你加入协作</p>
+                  <time :datetime="invitation.createdAt">{{ formatInvitationDate(invitation.createdAt) }}</time>
+                </div>
+                <div
+                  class="invitation-card-actions"
+                  :class="{ confirming: String(rejectConfirmationId) === String(invitation.id) }"
+                >
+                  <template v-if="String(rejectConfirmationId) === String(invitation.id)">
+                    <span>确定拒绝这条邀请？</span>
+                    <button type="button" :disabled="isInvitationOperationPending" @click="cancelInvitationRejection">
+                      取消
+                    </button>
+                    <button
+                      class="invitation-reject-confirm"
+                      type="button"
+                      :disabled="isInvitationOperationPending"
+                      @click="handleRejectInvitation(invitation)"
+                    >
+                      <RefreshCw
+                        v-if="String(rejectingInvitationId) === String(invitation.id)"
+                        class="spin-icon"
+                        :size="14"
+                      />
+                      <X v-else :size="14" />
+                      {{ String(rejectingInvitationId) === String(invitation.id) ? '处理中' : '确认拒绝' }}
+                    </button>
+                  </template>
+
+                  <template v-else>
+                    <button
+                      class="invitation-reject-button"
+                      type="button"
+                      :disabled="isInvitationOperationPending"
+                      @click="requestInvitationRejection(invitation.id)"
+                    >
+                      <X :size="15" />
+                      <span>拒绝</span>
+                    </button>
+                    <button
+                      class="invitation-accept-button"
+                      type="button"
+                      :disabled="isInvitationOperationPending"
+                      @click="handleAcceptInvitation(invitation)"
+                    >
+                      <RefreshCw
+                        v-if="String(acceptingInvitationId) === String(invitation.id)"
+                        class="spin-icon"
+                        :size="15"
+                      />
+                      <Check v-else :size="16" />
+                      <span>{{ String(acceptingInvitationId) === String(invitation.id) ? '加入中' : '接受邀请' }}</span>
+                    </button>
+                  </template>
+                </div>
+              </article>
+            </div>
+
+            <div v-else-if="!invitationListError" class="invitation-empty">
+              <span><UserPlus :size="25" /></span>
+              <strong>{{ acceptedInvitationGroup ? '其他邀请都处理完了' : '暂无待处理邀请' }}</strong>
+              <p>新的工作组邀请会出现在这里。</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </Transition>
+
     <section class="task-board" :class="{ 'group-board': selectedGroup }">
       <template v-if="selectedGroup">
         <header class="board-header group-board-header">
           <div class="board-title">
             <button class="mobile-menu-button" type="button" aria-label="打开导航" @click="isSidebarOpen = true">
               <Menu :size="20" />
+              <b v-if="pendingInvitationCount">{{ pendingInvitationCount > 99 ? '99+' : pendingInvitationCount }}</b>
             </button>
             <p class="date-line">协作工作组</p>
             <h1>{{ selectedGroup.name }}</h1>
@@ -2820,6 +3340,15 @@ function priorityText(priority) {
             {{ selectedGroupRole }}
           </span>
           <span>创建于 {{ formatGroupDate(selectedGroup.createdAt) }}</span>
+          <button
+            v-if="selectedGroup.currentUserRole === 'MEMBER'"
+            class="group-leave-trigger"
+            type="button"
+            @click="openGroupLeaveConfirm"
+          >
+            <LogOut :size="14" />
+            <span>退出工作组</span>
+          </button>
         </div>
 
         <div v-if="groupDetailError" class="notice error list-error" role="alert">
@@ -2851,11 +3380,65 @@ function priorityText(priority) {
 
           <section class="group-members-section">
             <header>
-              <div>
+              <div class="group-members-heading-copy">
                 <span>成员</span>
                 <strong>{{ groupMembers.length }}</strong>
               </div>
-              <small>按加入时间排列</small>
+
+              <div class="group-members-actions">
+                <small>按加入时间排列</small>
+                <div v-if="canInviteGroupMember" ref="groupInvitePanelRef" class="group-member-invite">
+                  <button
+                    class="group-invite-trigger"
+                    type="button"
+                    :class="{ active: isGroupInviteOpen }"
+                    :aria-expanded="isGroupInviteOpen"
+                    @click="toggleGroupInvite"
+                  >
+                    <UserPlus :size="14" />
+                    <span>邀请成员</span>
+                  </button>
+
+                  <Transition name="property-reveal">
+                    <form v-if="isGroupInviteOpen" class="group-invite-panel" @submit.prevent="handleCreateInvitation">
+                      <header>
+                        <span><UserPlus :size="16" /></span>
+                        <div>
+                          <strong>邀请成员</strong>
+                          <small>用户名或邮箱</small>
+                        </div>
+                        <button type="button" aria-label="关闭邀请面板" @click="closeGroupInvite">
+                          <X :size="14" />
+                        </button>
+                      </header>
+
+                      <label>
+                        <span class="sr-only">被邀请用户账号</span>
+                        <input
+                          v-focus
+                          v-model="invitationAccount"
+                          type="text"
+                          maxlength="100"
+                          autocomplete="off"
+                          placeholder="输入用户名或邮箱"
+                          @input="invitationError = ''; invitationMessage = ''; latestInvitation = null"
+                        />
+                        <button type="submit" :disabled="isGroupInviteSubmitting || !isInvitationValid">
+                          <RefreshCw v-if="isGroupInviteSubmitting" class="spin-icon" :size="14" />
+                          <SendHorizontal v-else :size="14" />
+                          <span>{{ isGroupInviteSubmitting ? '发送中' : '发送邀请' }}</span>
+                        </button>
+                      </label>
+
+                      <p v-if="invitationError" class="group-invite-feedback error" role="alert">{{ invitationError }}</p>
+                      <p v-if="invitationMessage" class="group-invite-feedback success" role="status">
+                        <Check :size="14" />
+                        <span>{{ invitationMessage }}</span>
+                      </p>
+                    </form>
+                  </Transition>
+                </div>
+              </div>
             </header>
 
             <div v-if="groupMembers.length" class="group-member-list">
@@ -2887,6 +3470,7 @@ function priorityText(priority) {
         <div class="board-title">
           <button class="mobile-menu-button" type="button" aria-label="打开导航" @click="isSidebarOpen = true">
             <Menu :size="20" />
+            <b v-if="pendingInvitationCount">{{ pendingInvitationCount > 99 ? '99+' : pendingInvitationCount }}</b>
           </button>
           <p class="date-line">{{ new Date().toLocaleDateString('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' }) }}</p>
           <h1>{{ currentView.label }}</h1>
@@ -3336,7 +3920,7 @@ function priorityText(priority) {
           <div v-if="isConfirmationDialogOpen" class="delete-dialog-overlay" @click.self="closeConfirmationDialog">
             <section
               class="delete-dialog"
-              :class="{ 'logout-dialog': isLogoutConfirmOpen }"
+              :class="`${confirmationDialogContent.kind}-dialog`"
               role="alertdialog"
               aria-modal="true"
               aria-labelledby="delete-dialog-title"
@@ -3345,15 +3929,14 @@ function priorityText(priority) {
             >
               <header class="delete-dialog-header">
                 <span class="delete-dialog-mark">
-                  <LogOut v-if="isLogoutConfirmOpen" :size="20" />
-                  <Trash2 v-else :size="20" />
+                  <component :is="confirmationDialogContent.icon" :size="20" />
                 </span>
-                <span>{{ isLogoutConfirmOpen ? 'SIGN OUT' : 'DELETE TASK' }}</span>
+                <span>{{ confirmationDialogContent.eyebrow }}</span>
                 <button
                   class="icon-button delete-dialog-close"
                   type="button"
-                  :aria-label="isLogoutConfirmOpen ? '关闭退出确认' : '关闭删除确认'"
-                  :disabled="isTaskDeleting"
+                  aria-label="关闭确认窗口"
+                  :disabled="isConfirmationPending"
                   @click="closeConfirmationDialog"
                 >
                   <X :size="18" />
@@ -3361,24 +3944,16 @@ function priorityText(priority) {
               </header>
 
               <div class="delete-dialog-copy">
-                <h2 id="delete-dialog-title">{{ isLogoutConfirmOpen ? '退出当前账号？' : '删除这个任务？' }}</h2>
-                <p id="delete-dialog-description">
-                  <template v-if="isLogoutConfirmOpen">
-                    退出后将清除本机的登录状态，你的任务数据仍会保留在账户中。
-                  </template>
-                  <template v-else>
-                    “{{ deleteCandidate.title }}”将从任务列表中永久移除。
-                  </template>
-                </p>
+                <h2 id="delete-dialog-title">{{ confirmationDialogContent.title }}</h2>
+                <p id="delete-dialog-description">{{ confirmationDialogContent.description }}</p>
               </div>
 
               <div class="delete-dialog-warning">
-                <LogOut v-if="isLogoutConfirmOpen" :size="16" />
-                <History v-else :size="16" />
-                <span>{{ isLogoutConfirmOpen ? '重新登录后可继续管理任务' : '此操作无法撤销' }}</span>
+                <component :is="confirmationDialogContent.warningIcon" :size="16" />
+                <span>{{ confirmationDialogContent.warning }}</span>
               </div>
 
-              <p v-if="!isLogoutConfirmOpen && deleteDialogError" class="delete-dialog-error" role="alert">
+              <p v-if="confirmationDialogContent.kind !== 'logout' && deleteDialogError" class="delete-dialog-error" role="alert">
                 {{ deleteDialogError }}
               </p>
 
@@ -3387,22 +3962,24 @@ function priorityText(priority) {
                   ref="deleteCancelButtonRef"
                   class="delete-cancel-button"
                   type="button"
-                  :disabled="isTaskDeleting"
+                  :disabled="isConfirmationPending"
                   @click="closeConfirmationDialog"
                 >
                   取消
                 </button>
                 <button
                   class="delete-confirm-button"
-                  :class="{ 'logout-confirm-button': isLogoutConfirmOpen }"
+                  :class="{
+                    'logout-confirm-button': isLogoutConfirmOpen,
+                    'leave-group-confirm-button': isGroupLeaveConfirmOpen
+                  }"
                   type="button"
-                  :disabled="isTaskDeleting"
+                  :disabled="isConfirmationPending"
                   @click="confirmDialogAction"
                 >
-                  <RefreshCw v-if="isTaskDeleting" class="spin-icon" :size="16" />
-                  <LogOut v-else-if="isLogoutConfirmOpen" :size="16" />
-                  <Trash2 v-else :size="16" />
-                  <span>{{ isTaskDeleting ? '正在删除' : isLogoutConfirmOpen ? '退出登录' : '确认删除' }}</span>
+                  <RefreshCw v-if="isConfirmationPending" class="spin-icon" :size="16" />
+                  <component :is="confirmationDialogContent.icon" v-else :size="16" />
+                  <span>{{ isConfirmationPending ? confirmationDialogContent.busyLabel : confirmationDialogContent.confirmLabel }}</span>
                 </button>
               </footer>
             </section>

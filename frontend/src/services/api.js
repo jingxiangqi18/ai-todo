@@ -303,3 +303,32 @@ export function getGroup(groupId) {
 export function listGroupMembers(groupId) {
   return request(`/groups/${groupId}/members`)
 }
+
+export function createGroupInvitation(groupId, payload) {
+  return request(`/groups/${groupId}/invitations`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function listPendingGroupInvitations() {
+  return request('/group-invitations/pending')
+}
+
+export function acceptGroupInvitation(invitationId) {
+  return request(`/group-invitations/${invitationId}/accept`, {
+    method: 'POST'
+  })
+}
+
+export function rejectGroupInvitation(invitationId) {
+  return request(`/group-invitations/${invitationId}/reject`, {
+    method: 'POST'
+  })
+}
+
+export function leaveGroup(groupId) {
+  return request(`/groups/${groupId}/members/me`, {
+    method: 'DELETE'
+  })
+}

@@ -12,6 +12,8 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.qijx.aitodo.group.dto.GroupCreateRequest;
 import com.qijx.aitodo.group.dto.GroupMemberResponse;
 import com.qijx.aitodo.group.dto.GroupResponse;
+import com.qijx.aitodo.group.dto.InvitationCreateRequest;
+import com.qijx.aitodo.group.dto.InvitationResponse;
 import com.qijx.aitodo.group.entity.TaskGroup;
 import com.qijx.aitodo.group.entity.TaskGroupMember;
 import com.qijx.aitodo.group.mapper.TaskGroupMapper;
@@ -93,6 +95,26 @@ public class GroupService {
         findMembership(userId, groupId);
 
         return taskGroupMemberMapper.selectGroupMembers(groupId);
+    }
+
+    public void leaveGroup(Long userId, Long groupId){
+        TaskGroup group = taskGroupMapper.selectById(groupId);
+
+        if(group == null){
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "该工作组不存在");
+        }
+
+        TaskGroupMember membership = findMembership(userId, groupId);
+
+        if("OWNER".equals(membership.getRole()) || userId.equals(group.getOwnerId())){
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "小组负责人不能直接退出，请先转让负责人或解散小组");
+        }
+
+        int deleteRows = taskGroupMemberMapper.deleteById(membership.getId());
+
+        if(deleteRows != 1){
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "退出失败，成员关系已发生变化");
+        }
     }
 
     private TaskGroupMember findMembership(Long userId, Long groupId){

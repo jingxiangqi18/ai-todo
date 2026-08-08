@@ -30,4 +30,24 @@ public interface TaskGroupMapper extends BaseMapper<TaskGroup>{
     List<GroupResponse> selectGroupsByMemberUserId(
         @Param("userId") Long userId
     );
+
+    @Select("""
+            SELECT
+                g.id,
+                g.name,
+                g.description,
+                g.owner_id,
+                m.role AS current_user_role,
+                g.created_at,
+                g.updated_at
+            FROM task_groups AS g
+            INNER JOIN task_group_members m
+                ON m.group_id = g.id
+            WHERE g.id = #{groupId}
+                AND m.user_id = #{userId}
+            """)
+    GroupResponse selectGroupResponseByIdAndMemberUserId(
+        @Param("groupId") Long groupId,
+        @Param("userId") Long userId
+    );
 }
