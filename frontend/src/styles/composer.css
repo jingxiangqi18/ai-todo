@@ -1,0 +1,267 @@
+/* Composer */
+.composer-overlay {
+  position: fixed;
+  z-index: var(--z-modal);
+  inset: 0;
+  display: grid;
+  place-items: start center;
+  padding: min(16vh, 130px) 20px 30px;
+  background: rgb(35 35 48 / 38%);
+  backdrop-filter: blur(5px) saturate(0.82);
+}
+
+.task-composer {
+  width: min(660px, 100%);
+  padding: 20px;
+  background: var(--color-surface);
+  border: 1px solid #dedee6;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popover);
+}
+
+.composer-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--color-divider);
+}
+
+.composer-heading p,
+.composer-heading span {
+  display: block;
+  margin: 0;
+}
+
+.composer-heading p {
+  font-size: var(--text-lg);
+  font-weight: 680;
+}
+
+.composer-heading span {
+  margin-top: 4px;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.icon-button,
+.mobile-menu-button,
+.mobile-sidebar-close {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  color: #69756e;
+  background: transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.icon-button:hover,
+.mobile-menu-button:hover,
+.mobile-sidebar-close:hover {
+  color: var(--color-text);
+  background: #f0eff4;
+}
+
+.mobile-menu-button,
+.mobile-sidebar-close {
+  display: none;
+}
+
+.composer-main {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 9px;
+  align-items: center;
+  margin-top: 18px;
+  color: var(--color-brand);
+  border-bottom: 1px solid #d1d3df;
+}
+
+.composer-main input {
+  min-width: 0;
+  height: 50px;
+  color: var(--color-text);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font-size: 19px;
+  font-weight: 620;
+}
+
+.composer-main input::placeholder {
+  color: #a2a2ad;
+}
+
+.composer-options {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 108px auto auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.composer-options > input {
+  min-width: 0;
+  height: 38px;
+  padding: 0 11px;
+  color: var(--color-text);
+  background: var(--color-surface-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  outline: 0;
+}
+
+.composer-options > input:focus {
+  border-color: #9298b4;
+}
+
+.priority-segment {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.due-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 10px;
+  color: #626370;
+  background: var(--color-surface-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.due-button:hover,
+.due-menu.open .due-button {
+  color: var(--color-brand-hover);
+  background: var(--color-brand-soft);
+  border-color: #d0d3e1;
+}
+
+.due-popover {
+  width: 290px;
+}
+
+.due-popover-header {
+  margin-bottom: 12px;
+}
+
+.due-popover-header strong {
+  font-size: var(--text-sm);
+}
+
+.due-presets,
+.due-editor-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.due-presets button,
+.due-editor-actions button,
+.due-done {
+  min-height: 34px;
+  color: var(--color-brand-hover);
+  background: var(--color-brand-soft);
+  border: 1px solid #d2d5e3;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.due-editor-actions button {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 7px 5px;
+  color: #62677c;
+  background: #f5f3f8;
+  border-color: #e0dce8;
+  transition: color var(--duration-fast) ease-out, background var(--duration-fast) ease-out,
+    border-color var(--duration-fast) ease-out, transform var(--duration-fast) ease-out;
+}
+
+.due-editor-actions button strong,
+.due-editor-actions button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.due-editor-actions button strong {
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.due-editor-actions button small {
+  color: #9691a3;
+  font-size: 8px;
+}
+
+.due-editor-actions button:hover {
+  color: #51495c;
+  background: #eeebf2;
+  border-color: #cbc4d3;
+  transform: translateY(-1px);
+}
+
+.due-editor-actions button.active {
+  color: #ffffff;
+  background: #81738a;
+  border-color: #81738a;
+  box-shadow: 0 6px 14px rgb(102 88 111 / 16%);
+}
+
+.due-editor-actions button.active small {
+  color: rgb(255 255 255 / 75%);
+}
+
+.due-field {
+  display: grid;
+  grid-template-columns: 45px 1fr;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.due-field input {
+  height: 36px;
+  padding: 0 9px;
+  color: var(--color-text);
+  background: var(--color-surface-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.due-summary {
+  margin-top: 10px;
+  padding: 9px;
+  color: var(--color-text-muted);
+  background: var(--color-surface-soft);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  text-align: center;
+}
+
+.due-done {
+  width: 100%;
+  margin-top: 10px;
+  color: #ffffff;
+  background: var(--color-brand);
+  border-color: var(--color-brand);
+}
+
+.primary-button.compact {
+  min-height: 38px;
+  white-space: nowrap;
+}
+

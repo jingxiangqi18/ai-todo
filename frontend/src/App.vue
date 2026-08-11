@@ -1,45 +1,39 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import VueDraggable from 'vuedraggable'
+import AiAdvisor from './components/ai/AiAdvisor.vue'
+import AuthView from './components/auth/AuthView.vue'
+import ConfirmationDialog from './components/common/ConfirmationDialog.vue'
+import GroupComposer from './components/groups/GroupComposer.vue'
+import GroupWorkspace from './components/groups/GroupWorkspace.vue'
+import InvitationCenter from './components/groups/InvitationCenter.vue'
+import AppSidebar from './components/layout/AppSidebar.vue'
+import TaskWorkspace from './components/tasks/TaskWorkspace.vue'
+import TaskComposer from './components/tasks/TaskComposer.vue'
+import { useResizablePanel } from './composables/useResizablePanel'
 import {
   AlignLeft,
   BatteryMedium,
-  Bell,
-  BrainCircuit,
-  Building2,
   CalendarDays,
   Check,
   ChevronDown,
-  ChevronLeft,
-  ChevronRight,
   Circle,
   Clock3,
-  Copy,
-  Crown,
   Flag,
-  FolderPlus,
   GripVertical,
   History,
-  Inbox,
   ListChecks,
   ListTodo,
   LogOut,
-  Menu,
   Pencil,
   Plus,
   RefreshCw,
   Save,
-  Search,
-  SendHorizontal,
-  SlidersHorizontal,
   Sparkles,
   Star,
   Trash2,
-  UserPlus,
   UsersRound,
   WandSparkles,
-  X,
-  UserRound
+  X
 } from '@lucide/vue'
 import {
   acceptGroupInvitation,
@@ -70,6 +64,25 @@ import {
   updateTask,
   updateTaskStatus
 } from './services/api'
+import { parseAdvice } from './utils/content'
+import {
+  END_OF_DAY_TIME,
+  formatDateKey,
+  formatDateLabel,
+  formatFullDateTime,
+  formatShortDate,
+  formatTaskDateTime,
+  formatTimeLabel,
+  getNextWeekEndDate,
+  parseLocalDateTime,
+  resolveDuePartValues,
+  resolveDuePresetDate,
+  splitDateParts,
+  splitTimeParts,
+  toLocalDateKey
+} from './utils/dateTime'
+import { groupRoleLabel } from './utils/groups'
+import { priorityText, statusText } from './utils/tasks'
 
 const authMode = ref('login')
 const user = ref(null)
@@ -126,7 +139,6 @@ const isGroupInviteSubmitting = ref(false)
 const invitationAccount = ref('')
 const invitationError = ref('')
 const invitationMessage = ref('')
-const latestInvitation = ref(null)
 const pendingInvitations = ref([])
 const isInvitationCenterOpen = ref(false)
 const isInvitationListLoading = ref(false)
@@ -148,25 +160,21 @@ const aiError = ref('')
 const aiCopied = ref(false)
 const stepPendingIds = reactive(new Set())
 const filterMenuRef = ref(null)
-const reminderMenuRef = ref(null)
 const detailPropertiesRef = ref(null)
 const groupInvitePanelRef = ref(null)
 const invitationCenterCloseRef = ref(null)
 const aiMessageInputRef = ref(null)
 const deleteCancelButtonRef = ref(null)
-const DETAIL_PANEL_WIDTH_KEY = 'aiTodoDetailPanelWidth'
 const TASK_ORDER_STORAGE_PREFIX = 'aiTodoTaskOrder'
 const TASK_STEP_BATCH_SIZE = 10
-const END_OF_DAY_TIME = '23:59'
-const DETAIL_PANEL_DEFAULT_WIDTH = 520
-const DETAIL_PANEL_MIN_WIDTH = 360
-const DETAIL_PANEL_MAX_WIDTH = 760
-const detailPanelWidth = ref(readStoredDetailPanelWidth())
-const detailPanelBounds = reactive({
-  min: DETAIL_PANEL_MIN_WIDTH,
-  max: DETAIL_PANEL_MAX_WIDTH
-})
-const isDetailResizing = ref(false)
+const {
+  width: detailPanelWidth,
+  bounds: detailPanelBounds,
+  isResizing: isDetailResizing,
+  startResize: startDetailResize,
+  resetWidth: resetDetailPanelWidth,
+  handleResizeKeydown: handleDetailResizeKeydown
+} = useResizablePanel()
 const isTaskDragging = ref(false)
 const draggingTaskId = ref(null)
 let searchTimer
@@ -174,8 +182,6 @@ let aiCopyTimer
 let taskStepStatsRequestId = 0
 let createStepDraftId = 0
 let groupDetailRequestId = 0
-let detailResizeStartX = 0
-let detailResizeStartWidth = 0
 let suppressTaskClickUntil = 0
 
 const vFocus = {
@@ -573,8 +579,6 @@ watch(aiMessage, () => {
 onMounted(async () => {
   document.addEventListener('pointerdown', handleDocumentPointerDown)
   document.addEventListener('keydown', handleDocumentKeydown)
-  window.addEventListener('resize', updateDetailPanelBounds)
-  updateDetailPanelBounds()
 
   const token = localStorage.getItem('aiTodoToken')
 
@@ -597,117 +601,10 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', handleDocumentPointerDown)
   document.removeEventListener('keydown', handleDocumentKeydown)
-  window.removeEventListener('resize', updateDetailPanelBounds)
-  finishDetailResize()
   window.clearTimeout(searchTimer)
   window.clearTimeout(aiCopyTimer)
   document.body.classList.remove('modal-open')
 })
-
-function readStoredDetailPanelWidth() {
-  try {
-    const storedWidth = Number(localStorage.getItem(DETAIL_PANEL_WIDTH_KEY))
-
-    return Number.isFinite(storedWidth) && storedWidth > 0
-      ? storedWidth
-      : DETAIL_PANEL_DEFAULT_WIDTH
-  } catch {
-    return DETAIL_PANEL_DEFAULT_WIDTH
-  }
-}
-
-function updateDetailPanelBounds() {
-  const viewportWidth = window.innerWidth
-  const sidebarWidth = viewportWidth > 1240 ? 240 : viewportWidth > 900 ? 82 : 0
-  const minimumBoardWidth = viewportWidth > 1240 ? 500 : 0
-  const availableWidth = viewportWidth - sidebarWidth - minimumBoardWidth
-  const maximumWidth = Math.min(DETAIL_PANEL_MAX_WIDTH, Math.max(DETAIL_PANEL_MIN_WIDTH, availableWidth))
-
-  detailPanelBounds.min = Math.min(DETAIL_PANEL_MIN_WIDTH, maximumWidth)
-  detailPanelBounds.max = maximumWidth
-
-  if (viewportWidth > 680) {
-    detailPanelWidth.value = clampDetailPanelWidth(detailPanelWidth.value)
-  }
-}
-
-function clampDetailPanelWidth(width) {
-  return Math.min(detailPanelBounds.max, Math.max(detailPanelBounds.min, Math.round(width)))
-}
-
-function persistDetailPanelWidth() {
-  try {
-    localStorage.setItem(DETAIL_PANEL_WIDTH_KEY, String(detailPanelWidth.value))
-  } catch {
-    // The resize remains available even when browser storage is disabled.
-  }
-}
-
-function startDetailResize(event) {
-  if (window.innerWidth <= 680 || (event.pointerType === 'mouse' && event.button !== 0)) {
-    return
-  }
-
-  event.preventDefault()
-  updateDetailPanelBounds()
-  detailResizeStartX = event.clientX
-  detailResizeStartWidth = detailPanelWidth.value
-  isDetailResizing.value = true
-  document.body.classList.add('detail-resizing')
-  window.addEventListener('pointermove', handleDetailResize)
-  window.addEventListener('pointerup', finishDetailResize)
-  window.addEventListener('pointercancel', finishDetailResize)
-}
-
-function handleDetailResize(event) {
-  if (!isDetailResizing.value) {
-    return
-  }
-
-  detailPanelWidth.value = clampDetailPanelWidth(
-    detailResizeStartWidth + detailResizeStartX - event.clientX
-  )
-}
-
-function finishDetailResize() {
-  if (isDetailResizing.value) {
-    persistDetailPanelWidth()
-  }
-
-  isDetailResizing.value = false
-  document.body.classList.remove('detail-resizing')
-  window.removeEventListener('pointermove', handleDetailResize)
-  window.removeEventListener('pointerup', finishDetailResize)
-  window.removeEventListener('pointercancel', finishDetailResize)
-}
-
-function resetDetailPanelWidth() {
-  updateDetailPanelBounds()
-  detailPanelWidth.value = clampDetailPanelWidth(DETAIL_PANEL_DEFAULT_WIDTH)
-  persistDetailPanelWidth()
-}
-
-function handleDetailResizeKeydown(event) {
-  const resizeStep = event.shiftKey ? 64 : 24
-  let nextWidth = detailPanelWidth.value
-
-  if (event.key === 'ArrowLeft') {
-    nextWidth += resizeStep
-  } else if (event.key === 'ArrowRight') {
-    nextWidth -= resizeStep
-  } else if (event.key === 'Home') {
-    nextWidth = detailPanelBounds.min
-  } else if (event.key === 'End') {
-    nextWidth = detailPanelBounds.max
-  } else {
-    return
-  }
-
-  event.preventDefault()
-  updateDetailPanelBounds()
-  detailPanelWidth.value = clampDetailPanelWidth(nextWidth)
-  persistDetailPanelWidth()
-}
 
 function handleDocumentKeydown(event) {
   if (event.key !== 'Escape') {
@@ -787,11 +684,11 @@ function handleDeleteDialogKeydown(event) {
 function handleDocumentPointerDown(event) {
   const path = event.composedPath()
 
-  if (isFilterOpen.value && filterMenuRef.value && !path.includes(filterMenuRef.value)) {
+  if (isFilterOpen.value && filterMenuRef.value && !filterMenuRef.value.isInsideFilter(event.target)) {
     isFilterOpen.value = false
   }
 
-  if (isReminderOpen.value && reminderMenuRef.value && !path.includes(reminderMenuRef.value)) {
+  if (isReminderOpen.value && filterMenuRef.value && !filterMenuRef.value.isInsideReminder(event.target)) {
     isReminderOpen.value = false
   }
 
@@ -801,7 +698,7 @@ function handleDocumentPointerDown(event) {
   }
 
 
-  if (isGroupInviteOpen.value && groupInvitePanelRef.value && !path.includes(groupInvitePanelRef.value)) {
+  if (isGroupInviteOpen.value && groupInvitePanelRef.value && !groupInvitePanelRef.value.contains(event.target)) {
     closeGroupInvite()
   }
 }
@@ -1421,26 +1318,6 @@ function changePageSize(size) {
   return refreshTasks()
 }
 
-function formatDateKey(value) {
-  return value ? String(value).slice(0, 10) : ''
-}
-
-function toLocalDateKey(date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-
-  return `${year}-${month}-${day}`
-}
-
-function formatDueAt(value) {
-  if (!value) {
-    return '未安排'
-  }
-
-  return formatTaskDateTime(value)
-}
-
 function getTaskStepStats(taskId) {
   return taskStepStatsById.get(taskId) || {
     total: 0,
@@ -1532,97 +1409,6 @@ async function refreshTaskStepStats(taskList) {
   })
 
   await Promise.allSettled(workers)
-}
-
-function formatTaskDateTime(value) {
-  const date = parseLocalDateTime(value)
-
-  if (!date) {
-    return '未安排'
-  }
-
-  const datePart = date.toLocaleDateString('zh-CN', {
-    month: 'long',
-    day: 'numeric',
-    weekday: 'short'
-  })
-  const timePart = date.toLocaleTimeString('zh-CN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  })
-
-  return `${datePart} ${timePart}`
-}
-
-function formatFullDateTime(value) {
-  const date = parseLocalDateTime(value)
-
-  if (!date) {
-    return '暂无记录'
-  }
-
-  const datePart = date.toLocaleDateString('zh-CN', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-    weekday: 'short'
-  })
-  const timePart = date.toLocaleTimeString('zh-CN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  })
-
-  return `${datePart} ${timePart}`
-}
-
-function parseLocalDateTime(value) {
-  if (!value) {
-    return null
-  }
-
-  const date = new Date(String(value))
-
-  return Number.isNaN(date.getTime()) ? null : date
-}
-
-function formatDateLabel(value) {
-  if (!value) {
-    return '未设置日期'
-  }
-
-  const [year, month, day] = value.split('-')
-
-  return `${year}年${month}月${day}日`
-}
-
-function formatTimeLabel(value) {
-  return value || '默认 23:59'
-}
-
-function formatShortDate(date) {
-  return `${date.getMonth() + 1}月${date.getDate()}日`
-}
-
-function getNextWeekEndDate() {
-  const nextWeekEnd = new Date()
-  const currentDay = nextWeekEnd.getDay()
-  const daysUntilNextWeekEnd = currentDay === 0 ? 7 : 14 - currentDay
-  nextWeekEnd.setDate(nextWeekEnd.getDate() + daysUntilNextWeekEnd)
-  return nextWeekEnd
-}
-
-function resolveDuePresetDate(preset) {
-  const date = new Date()
-
-  if (preset === 'tomorrow') {
-    date.setDate(date.getDate() + 1)
-  } else if (preset === 'next-week') {
-    return getNextWeekEndDate()
-  }
-
-  return date
 }
 
 function applyCreateDuePreset(preset) {
@@ -1737,69 +1523,6 @@ function setEditDueParts(date, time) {
 
 function resolveEditDueValues() {
   return resolveDuePartValues(editDueParts)
-}
-
-function resolveDuePartValues(parts) {
-  const { year, month, day, hour, minute } = parts
-  const hasDatePart = Boolean(year || month || day)
-  const hasTimePart = Boolean(hour || minute)
-
-  if (!hasDatePart) {
-    return hasTimePart
-      ? { error: '请先填写截止日期。', date: '', time: '' }
-      : { error: '', date: '', time: '' }
-  }
-
-  if (year.length !== 4 || !month || !day) {
-    return { error: '请完整填写截止日期。', date: '', time: '' }
-  }
-
-  const yearNumber = Number(year)
-  const monthNumber = Number(month)
-  const dayNumber = Number(day)
-  const candidate = new Date(yearNumber, monthNumber - 1, dayNumber)
-  const isValidDate =
-    yearNumber >= 1000 &&
-    monthNumber >= 1 &&
-    monthNumber <= 12 &&
-    dayNumber >= 1 &&
-    dayNumber <= 31 &&
-    candidate.getFullYear() === yearNumber &&
-    candidate.getMonth() === monthNumber - 1 &&
-    candidate.getDate() === dayNumber
-
-  if (!isValidDate) {
-    return { error: '截止日期无效，请重新填写。', date: '', time: '' }
-  }
-
-  if (hasTimePart && (!hour || !minute)) {
-    return { error: '请完整填写截止时间。', date: '', time: '' }
-  }
-
-  const hourNumber = hasTimePart ? Number(hour) : 23
-  const minuteNumber = hasTimePart ? Number(minute) : 59
-
-  if (hourNumber < 0 || hourNumber > 23 || minuteNumber < 0 || minuteNumber > 59) {
-    return { error: '截止时间无效，请重新填写。', date: '', time: '' }
-  }
-
-  return {
-    error: '',
-    date: `${year}-${String(monthNumber).padStart(2, '0')}-${String(dayNumber).padStart(2, '0')}`,
-    time: `${String(hourNumber).padStart(2, '0')}:${String(minuteNumber).padStart(2, '0')}`
-  }
-}
-
-function splitDateParts(value) {
-  const [year = '', month = '', day = ''] = value ? value.split('-') : []
-
-  return { year, month, day }
-}
-
-function splitTimeParts(value) {
-  const [hour = '', minute = ''] = value ? value.split(':') : []
-
-  return { hour, minute }
 }
 
 async function openTaskDetail(task) {
@@ -2436,111 +2159,6 @@ async function copyAiAdvice() {
   }, 1800)
 }
 
-function parseAdvice(content) {
-  if (!content?.trim()) {
-    return []
-  }
-
-  const blocks = []
-  let activeList = null
-
-  const flushList = () => {
-    if (activeList) {
-      blocks.push(activeList)
-      activeList = null
-    }
-  }
-
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim()
-
-    if (!line) {
-      flushList()
-      continue
-    }
-
-    const heading = line.match(/^#{1,3}\s+(.+)$/)
-    const orderedItem = line.match(/^\d+[.、]\s*(.+)$/)
-    const unorderedItem = line.match(/^[-*•]\s+(.+)$/)
-
-    if (heading) {
-      flushList()
-      blocks.push({ type: 'heading', text: cleanAdviceText(heading[1]) })
-      continue
-    }
-
-    if (orderedItem || unorderedItem) {
-      const type = orderedItem ? 'ordered' : 'unordered'
-      const text = cleanAdviceText((orderedItem || unorderedItem)[1])
-
-      if (!activeList || activeList.type !== type) {
-        flushList()
-        activeList = { type, items: [] }
-      }
-
-      activeList.items.push(text)
-      continue
-    }
-
-    flushList()
-    blocks.push({ type: 'paragraph', text: cleanAdviceText(line) })
-  }
-
-  flushList()
-
-  return blocks
-}
-
-function cleanAdviceText(text) {
-  return text
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/__(.*?)__/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
-}
-
-function groupRoleLabel(role) {
-  const labels = {
-    OWNER: '负责人',
-    MEMBER: '成员'
-  }
-
-  return labels[role] || '成员'
-}
-
-function groupInitial(name) {
-  return String(name || '组').trim().slice(0, 1).toLocaleUpperCase() || '组'
-}
-
-function formatGroupDate(value) {
-  const date = parseLocalDateTime(value)
-
-  if (!date) {
-    return '暂无记录'
-  }
-
-  return date.toLocaleDateString('zh-CN', {
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  })
-}
-
-function formatInvitationDate(value) {
-  const date = parseLocalDateTime(value)
-
-  if (!date) {
-    return '刚刚收到'
-  }
-
-  return date.toLocaleString('zh-CN', {
-    month: 'long',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  })
-}
-
 async function openInvitationCenter() {
   acceptedInvitationGroup.value = null
   rejectConfirmationId.value = null
@@ -2653,7 +2271,6 @@ function resetGroupInvitation() {
   invitationAccount.value = ''
   invitationError.value = ''
   invitationMessage.value = ''
-  latestInvitation.value = null
 }
 
 function toggleGroupInvite() {
@@ -2669,7 +2286,6 @@ function toggleGroupInvite() {
   invitationAccount.value = ''
   invitationError.value = ''
   invitationMessage.value = ''
-  latestInvitation.value = null
   isGroupInviteOpen.value = true
 }
 
@@ -2697,11 +2313,9 @@ async function handleCreateInvitation() {
       account: invitationAccount.value.trim()
     })
 
-    latestInvitation.value = invitation
     invitationAccount.value = ''
     invitationMessage.value = `已向 ${invitation.inviteeName || '该用户'} 发送邀请，等待对方处理。`
   } catch (error) {
-    latestInvitation.value = null
     invitationError.value = error.message || '邀请发送失败，请稍后重试。'
   } finally {
     isGroupInviteSubmitting.value = false
@@ -2946,27 +2560,6 @@ function removeCreateStep(stepId) {
   composerError.value = ''
 }
 
-function isTaskOverdue(task) {
-  const due = parseLocalDateTime(task?.dueAt)
-
-  return Boolean(due && task.status !== 'DONE' && due.getTime() < Date.now())
-}
-
-function statusText(status) {
-  const option = statusOptions.find((item) => item.value === status)
-
-  return option?.label || status || '待办'
-}
-
-function priorityText(priority) {
-  const map = {
-    LOW: '低',
-    MEDIUM: '中',
-    HIGH: '高'
-  }
-
-  return map[priority] || priority || '中'
-}
 </script>
 
 <template>
@@ -2974,85 +2567,20 @@ function priorityText(priority) {
     <div class="loader"></div>
   </main>
 
-  <main v-else-if="!user" class="auth-shell">
-    <section class="auth-card">
-      <div class="auth-visual">
-        <div class="brand-lockup">
-          <span>AT</span>
-          <p class="brand">AI Todo</p>
-        </div>
-        <div class="auth-visual-copy">
-          <p>PERSONAL FOCUS SYSTEM</p>
-          <h1>让今天的重点<br />清晰可见</h1>
-          <span>安静地收拢任务，把注意力留给真正重要的事。</span>
-        </div>
-        <div class="preview-list">
-          <div class="preview-item strong">
-            <span></span>
-            <p>完成 Spring Boot 任务接口联调</p>
-          </div>
-          <div class="preview-item">
-            <span></span>
-            <p>整理明天的学习计划</p>
-          </div>
-          <div class="preview-item">
-            <span></span>
-            <p>记录一个 AI 功能想法</p>
-          </div>
-        </div>
-      </div>
-
-      <form class="auth-form" @submit.prevent="handleAuthSubmit">
-        <div class="auth-tabs" role="tablist">
-          <button type="button" :class="{ active: isLogin }" @click="switchAuthMode('login')">
-            登录
-          </button>
-          <button type="button" :class="{ active: !isLogin }" @click="switchAuthMode('register')">
-            注册
-          </button>
-        </div>
-
-        <div class="form-heading">
-          <h2>{{ isLogin ? '欢迎回来' : '创建账户' }}</h2>
-          <p>{{ isLogin ? '登录后查看和创建你的任务。' : '注册成功后再使用账号登录。' }}</p>
-        </div>
-
-        <label v-if="isLogin" class="field">
-          <span>账号</span>
-          <input v-model="authForm.account" type="text" autocomplete="username" placeholder="用户名或邮箱" />
-        </label>
-
-        <template v-else>
-          <label class="field">
-            <span>用户名</span>
-            <input v-model="authForm.username" type="text" autocomplete="username" placeholder="3 到 20 个字符" />
-          </label>
-
-          <label class="field">
-            <span>邮箱</span>
-            <input v-model="authForm.email" type="email" autocomplete="email" placeholder="name@example.com" />
-          </label>
-        </template>
-
-        <label class="field">
-          <span>密码</span>
-          <input
-            v-model="authForm.password"
-            :autocomplete="isLogin ? 'current-password' : 'new-password'"
-            type="password"
-            placeholder="至少 6 个字符"
-          />
-        </label>
-
-        <p v-if="errorMessage" class="notice error">{{ errorMessage }}</p>
-        <p v-if="successMessage" class="notice success">{{ successMessage }}</p>
-
-        <button class="primary-button" type="submit" :disabled="isAuthSubmitting || !isAuthValid">
-          {{ isAuthSubmitting ? '提交中...' : isLogin ? '登录' : '注册' }}
-        </button>
-      </form>
-    </section>
-  </main>
+  <AuthView
+    v-else-if="!user"
+    v-model:account="authForm.account"
+    v-model:username="authForm.username"
+    v-model:email="authForm.email"
+    v-model:password="authForm.password"
+    :is-login="isLogin"
+    :is-submitting="isAuthSubmitting"
+    :is-valid="isAuthValid"
+    :error-message="errorMessage"
+    :success-message="successMessage"
+    @mode-change="switchAuthMode"
+    @submit="handleAuthSubmit"
+  />
 
   <main
     v-else
@@ -3060,1282 +2588,205 @@ function priorityText(priority) {
     :class="{ 'has-detail': selectedTask || isComposerOpen || isGroupComposerOpen, 'is-detail-resizing': isDetailResizing }"
     :style="{ '--detail-panel-width': `${detailPanelWidth}px` }"
   >
-    <button
-      v-if="isSidebarOpen"
-      class="sidebar-backdrop"
-      type="button"
-      aria-label="关闭导航"
-      @click="isSidebarOpen = false"
-    ></button>
+    <AppSidebar
+      :open="isSidebarOpen"
+      :user="user"
+      :views="views"
+      :active-view="activeView"
+      :selected-group="selectedGroup"
+      :groups="groups"
+      :is-group-list-loading="isGroupListLoading"
+      :group-list-error="groupListError"
+      :pending-invitation-count="pendingInvitationCount"
+      @close="isSidebarOpen = false"
+      @select-view="selectView"
+      @select-group="selectGroup"
+      @open-invitations="openInvitationCenter"
+      @create-group="openGroupComposer"
+      @retry-groups="refreshGroups"
+      @logout="openLogoutConfirm"
+    />
 
-    <aside class="sidebar" :class="{ open: isSidebarOpen }">
-      <div class="sidebar-brand">
-        <span>AT</span>
-        <strong>AI Todo</strong>
-        <button class="mobile-sidebar-close" type="button" aria-label="关闭导航" @click="isSidebarOpen = false">
-          <X :size="18" />
-        </button>
-      </div>
-
-      <div class="account-box">
-        <div class="avatar">
-          <UserRound :size="20" />
-        </div>
-        <div class="account-copy">
-          <strong>{{ user.username }}</strong>
-          <span>{{ user.email }}</span>
-        </div>
-      </div>
-
-      <div class="sidebar-scroll-area">
-        <nav class="nav-list" aria-label="任务视图">
-          <button
-            v-for="view in views"
-            :key="view.key"
-            type="button"
-            :class="{ active: !selectedGroup && activeView === view.key }"
-            :aria-current="!selectedGroup && activeView === view.key ? 'page' : undefined"
-            @click="selectView(view.key)"
-          >
-            <component :is="view.icon" :size="18" />
-            <span>{{ view.label }}</span>
-            <em>{{ view.count }}</em>
-          </button>
-        </nav>
-
-        <section class="sidebar-groups" aria-labelledby="sidebar-groups-title">
-          <header class="sidebar-group-heading">
-            <span id="sidebar-groups-title">工作组</span>
-            <div class="sidebar-group-actions">
-              <button
-                class="sidebar-group-invitation-button"
-                :class="{ attention: pendingInvitationCount > 0 }"
-                type="button"
-                :aria-label="pendingInvitationCount ? `${pendingInvitationCount} 个待处理工作组邀请` : '查看工作组邀请'"
-                title="协作邀请"
-                @click="openInvitationCenter"
-              >
-                <Inbox :size="15" />
-                <b v-if="pendingInvitationCount">{{ pendingInvitationCount > 99 ? '99+' : pendingInvitationCount }}</b>
-              </button>
-              <button type="button" aria-label="创建工作组" title="创建工作组" @click="openGroupComposer">
-                <FolderPlus :size="15" />
-              </button>
-            </div>
-          </header>
-
-          <div v-if="isGroupListLoading" class="group-nav-loading" aria-label="正在加载工作组">
-            <span></span>
-            <span></span>
-          </div>
-
-          <div v-else-if="groups.length" class="group-nav-list">
-            <button
-              v-for="group in groups"
-              :key="group.id"
-              type="button"
-              class="group-nav-item"
-              :class="{ active: String(selectedGroup?.id) === String(group.id) }"
-              :aria-current="String(selectedGroup?.id) === String(group.id) ? 'page' : undefined"
-              :title="group.name"
-              @click="selectGroup(group)"
-            >
-              <span class="group-nav-avatar">{{ groupInitial(group.name) }}</span>
-              <span class="group-nav-copy">{{ group.name }}</span>
-              <Crown v-if="group.currentUserRole === 'OWNER'" class="group-nav-role" :size="13" />
-              <UsersRound v-else class="group-nav-role" :size="13" />
-            </button>
-          </div>
-
-          <button v-else-if="!groupListError" class="group-nav-empty" type="button" @click="openGroupComposer">
-            <Plus :size="14" />
-            <span>创建工作组</span>
-          </button>
-
-          <div v-if="groupListError" class="group-nav-error">
-            <span>{{ groupListError }}</span>
-            <button type="button" aria-label="重新加载工作组" title="重试" @click="refreshGroups">
-              <RefreshCw :size="13" />
-            </button>
-          </div>
-        </section>
-      </div>
-
-      <div class="sidebar-footer">
-        <button class="ghost-button" type="button" @click="openLogoutConfirm">
-          <LogOut :size="17" />
-          <span>退出登录</span>
-        </button>
-      </div>
-    </aside>
-
-    <Transition name="invitation-drawer">
-      <div
-        v-if="isInvitationCenterOpen"
-        class="invitation-drawer-overlay"
-        @click.self="closeInvitationCenter"
-      >
-        <section
-          class="invitation-drawer"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="invitation-center-title"
-        >
-          <header class="invitation-drawer-header">
-            <div>
-              <span>WORKSPACE INVITES</span>
-              <h2 id="invitation-center-title">协作邀请</h2>
-            </div>
-            <button
-              ref="invitationCenterCloseRef"
-              class="icon-button"
-              type="button"
-              :disabled="isInvitationOperationPending"
-              aria-label="关闭协作邀请"
-              @click="closeInvitationCenter"
-            >
-              <X :size="19" />
-            </button>
-          </header>
-
-          <div class="invitation-drawer-summary">
-            <span class="invitation-summary-icon"><UsersRound :size="18" /></span>
-            <div>
-              <strong>{{ invitationListError ? '邀请暂时无法读取' : `${pendingInvitationCount} 个待处理邀请` }}</strong>
-              <span>{{ invitationListError ? '请重试以获取最新邀请' : '加入后，工作组会显示在你的侧栏中' }}</span>
-            </div>
-          </div>
-
-          <div class="invitation-drawer-content">
-            <div v-if="acceptedInvitationGroup" class="invitation-accepted" role="status">
-              <span><Check :size="17" /></span>
-              <div>
-                <strong>已加入 {{ acceptedInvitationGroup.name }}</strong>
-                <small>成员身份已经同步</small>
-              </div>
-              <button type="button" @click="openAcceptedInvitationGroup">
-                打开工作组
-                <ChevronRight :size="15" />
-              </button>
-            </div>
-
-            <div v-if="invitationActionMessage" class="invitation-action-notice" role="status">
-              <Check :size="15" />
-              <span>{{ invitationActionMessage }}</span>
-            </div>
-
-            <div v-if="invitationListError" class="invitation-list-error" role="alert">
-              <span>{{ invitationListError }}</span>
-              <button type="button" :disabled="isInvitationListLoading" @click="refreshPendingInvitations(true)">
-                重试
-              </button>
-            </div>
-
-            <div v-if="isInvitationListLoading" class="invitation-list-loading" aria-label="正在加载协作邀请">
-              <div v-for="index in 3" :key="index">
-                <span></span>
-                <i></i>
-                <i></i>
-              </div>
-            </div>
-
-            <div v-else-if="!invitationListError && pendingInvitations.length" class="invitation-list">
-              <article v-for="invitation in pendingInvitations" :key="invitation.id" class="invitation-card">
-                <div class="invitation-card-mark">{{ groupInitial(invitation.groupName) }}</div>
-                <div class="invitation-card-copy">
-                  <span>工作组邀请</span>
-                  <h3>{{ invitation.groupName }}</h3>
-                  <p><b>{{ invitation.inviterName }}</b> 邀请你加入协作</p>
-                  <time :datetime="invitation.createdAt">{{ formatInvitationDate(invitation.createdAt) }}</time>
-                </div>
-                <div
-                  class="invitation-card-actions"
-                  :class="{ confirming: String(rejectConfirmationId) === String(invitation.id) }"
-                >
-                  <template v-if="String(rejectConfirmationId) === String(invitation.id)">
-                    <span>确定拒绝这条邀请？</span>
-                    <button type="button" :disabled="isInvitationOperationPending" @click="cancelInvitationRejection">
-                      取消
-                    </button>
-                    <button
-                      class="invitation-reject-confirm"
-                      type="button"
-                      :disabled="isInvitationOperationPending"
-                      @click="handleRejectInvitation(invitation)"
-                    >
-                      <RefreshCw
-                        v-if="String(rejectingInvitationId) === String(invitation.id)"
-                        class="spin-icon"
-                        :size="14"
-                      />
-                      <X v-else :size="14" />
-                      {{ String(rejectingInvitationId) === String(invitation.id) ? '处理中' : '确认拒绝' }}
-                    </button>
-                  </template>
-
-                  <template v-else>
-                    <button
-                      class="invitation-reject-button"
-                      type="button"
-                      :disabled="isInvitationOperationPending"
-                      @click="requestInvitationRejection(invitation.id)"
-                    >
-                      <X :size="15" />
-                      <span>拒绝</span>
-                    </button>
-                    <button
-                      class="invitation-accept-button"
-                      type="button"
-                      :disabled="isInvitationOperationPending"
-                      @click="handleAcceptInvitation(invitation)"
-                    >
-                      <RefreshCw
-                        v-if="String(acceptingInvitationId) === String(invitation.id)"
-                        class="spin-icon"
-                        :size="15"
-                      />
-                      <Check v-else :size="16" />
-                      <span>{{ String(acceptingInvitationId) === String(invitation.id) ? '加入中' : '接受邀请' }}</span>
-                    </button>
-                  </template>
-                </div>
-              </article>
-            </div>
-
-            <div v-else-if="!invitationListError" class="invitation-empty">
-              <span><UserPlus :size="25" /></span>
-              <strong>{{ acceptedInvitationGroup ? '其他邀请都处理完了' : '暂无待处理邀请' }}</strong>
-              <p>新的工作组邀请会出现在这里。</p>
-            </div>
-          </div>
-        </section>
-      </div>
-    </Transition>
+    <InvitationCenter
+      ref="invitationCenterCloseRef"
+      :open="isInvitationCenterOpen"
+      :invitations="pendingInvitations"
+      :pending-count="pendingInvitationCount"
+      :is-loading="isInvitationListLoading"
+      :error-message="invitationListError"
+      :accepted-group="acceptedInvitationGroup"
+      :action-message="invitationActionMessage"
+      :operation-pending="isInvitationOperationPending"
+      :accepting-id="acceptingInvitationId"
+      :rejecting-id="rejectingInvitationId"
+      :reject-confirmation-id="rejectConfirmationId"
+      @close="closeInvitationCenter"
+      @open-accepted="openAcceptedInvitationGroup"
+      @retry="refreshPendingInvitations(true)"
+      @cancel-rejection="cancelInvitationRejection"
+      @request-rejection="requestInvitationRejection"
+      @reject="handleRejectInvitation"
+      @accept="handleAcceptInvitation"
+    />
 
     <section class="task-board" :class="{ 'group-board': selectedGroup }">
-      <template v-if="selectedGroup">
-        <header class="board-header group-board-header">
-          <div class="board-title">
-            <button class="mobile-menu-button" type="button" aria-label="打开导航" @click="isSidebarOpen = true">
-              <Menu :size="20" />
-              <b v-if="pendingInvitationCount">{{ pendingInvitationCount > 99 ? '99+' : pendingInvitationCount }}</b>
-            </button>
-            <p class="date-line">协作工作组</p>
-            <h1>{{ selectedGroup.name }}</h1>
-          </div>
+      <GroupWorkspace
+        v-if="selectedGroup"
+        ref="groupInvitePanelRef"
+        v-model:invitation-account="invitationAccount"
+        :group="selectedGroup"
+        :members="groupMembers"
+        :role-label="selectedGroupRole"
+        :pending-invitation-count="pendingInvitationCount"
+        :detail-error="groupDetailError"
+        :is-loading="isGroupDetailLoading"
+        :can-invite="canInviteGroupMember"
+        :is-invite-open="isGroupInviteOpen"
+        :is-invite-submitting="isGroupInviteSubmitting"
+        :is-invitation-valid="isInvitationValid"
+        :invitation-error="invitationError"
+        :invitation-message="invitationMessage"
+        @open-sidebar="isSidebarOpen = true"
+        @create-group="openGroupComposer"
+        @leave="openGroupLeaveConfirm"
+        @retry="selectGroup(selectedGroup)"
+        @toggle-invite="toggleGroupInvite"
+        @close-invite="closeGroupInvite"
+        @submit-invite="handleCreateInvitation"
+        @clear-invitation-feedback="invitationError = ''; invitationMessage = ''"
+      />
 
-          <div class="board-primary-actions group-primary-actions">
-            <button class="primary-button group-create-trigger" type="button" @click="openGroupComposer">
-              <FolderPlus :size="17" />
-              <span>新建工作组</span>
-            </button>
-          </div>
-        </header>
+      <TaskWorkspace
+        v-else
+        ref="filterMenuRef"
+        v-model:query="query"
+        v-model:filter-open="isFilterOpen"
+        v-model:reminder-open="isReminderOpen"
+        v-model:completed-group-open="isCompletedGroupOpen"
+        :pending-invitation-count="pendingInvitationCount"
+        :current-view="currentView"
+        :reminders="reminders"
+        :has-list-filters="hasListFilters"
+        :has-server-query="hasServerQuery"
+        :filters="listFilters"
+        :status-options="statusOptions"
+        :priority-options="priorityOptions"
+        :stats="currentViewStats"
+        :error-message="errorMessage"
+        :is-loading="isTaskListLoading"
+        :tasks="visibleTasks"
+        :task-groups="visibleTaskGroups"
+        :selected-task="selectedTask"
+        :dragging-task-id="draggingTaskId"
+        :empty-state="emptyState"
+        :page="taskPage"
+        :get-step-stats="getTaskStepStats"
+        :get-step-label="taskStepListLabel"
+        @open-sidebar="isSidebarOpen = true"
+        @clear-search="clearSearch"
+        @open-task="handleTaskItemClick"
+        @clear-filters="clearListFilters"
+        @set-status="setListStatus"
+        @set-priority="setListPriority"
+        @open-ai="openAiAdvisor"
+        @create-task="openComposer"
+        @retry="refreshTasks"
+        @drag-start="handleTaskDragStart"
+        @drag-end="handleTaskDragEnd"
+        @toggle-task="toggleTaskDone"
+        @move-task="moveTaskWithKeyboard"
+        @empty-action="handleEmptyAction"
+        @change-page="changePage"
+        @change-page-size="changePageSize"
+      />
 
-        <div class="board-summary group-summary" aria-label="工作组概览">
-          <span><b>{{ groupMembers.length }}</b> 位成员</span>
-          <span class="group-role-summary">
-            <Crown v-if="selectedGroup.currentUserRole === 'OWNER'" :size="13" />
-            <UsersRound v-else :size="13" />
-            {{ selectedGroupRole }}
-          </span>
-          <span>创建于 {{ formatGroupDate(selectedGroup.createdAt) }}</span>
-          <button
-            v-if="selectedGroup.currentUserRole === 'MEMBER'"
-            class="group-leave-trigger"
-            type="button"
-            @click="openGroupLeaveConfirm"
-          >
-            <LogOut :size="14" />
-            <span>退出工作组</span>
-          </button>
-        </div>
+      <AiAdvisor
+        ref="aiMessageInputRef"
+        v-model:message="aiMessage"
+        :open="isAiAdvisorOpen"
+        :prompt-options="aiPromptOptions"
+        :unfinished-count="unfinishedTaskCount"
+        :stats="taskStats"
+        :is-submitting="isAiSubmitting"
+        :is-valid="isAiMessageValid"
+        :error-message="aiError"
+        :advice="aiAdvice"
+        :advice-blocks="aiAdviceBlocks"
+        :copied="aiCopied"
+        @close="closeAiAdvisor"
+        @apply-prompt="applyAiPrompt"
+        @submit="handleAiAdviceSubmit"
+        @copy="copyAiAdvice"
+      />
 
-        <div v-if="groupDetailError" class="notice error list-error" role="alert">
-          <span>{{ groupDetailError }}</span>
-          <button type="button" @click="selectGroup(selectedGroup)">重试</button>
-        </div>
-
-        <div v-if="isGroupDetailLoading" class="group-workspace group-workspace-loading" aria-label="正在加载工作组">
-          <div class="group-profile-skeleton"><span></span><i></i><i></i></div>
-          <div class="group-member-skeleton" v-for="index in 3" :key="index"><span></span><i></i></div>
-        </div>
-
-        <section v-else class="group-workspace">
-          <header class="group-profile-band">
-            <span class="group-profile-mark">{{ groupInitial(selectedGroup.name) }}</span>
-            <div class="group-profile-copy">
-              <span>WORKSPACE</span>
-              <h2>{{ selectedGroup.name }}</h2>
-              <p>{{ selectedGroup.description || '这个工作组暂时没有填写描述。' }}</p>
-            </div>
-            <span class="group-role-badge" :class="{ owner: selectedGroup.currentUserRole === 'OWNER' }">
-              <Crown v-if="selectedGroup.currentUserRole === 'OWNER'" :size="14" />
-              <UsersRound v-else :size="14" />
-              {{ selectedGroupRole }}
-            </span>
-          </header>
-
-          <div class="group-workspace-divider"></div>
-
-          <section class="group-members-section">
-            <header>
-              <div class="group-members-heading-copy">
-                <span>成员</span>
-                <strong>{{ groupMembers.length }}</strong>
-              </div>
-
-              <div class="group-members-actions">
-                <small>按加入时间排列</small>
-                <div v-if="canInviteGroupMember" ref="groupInvitePanelRef" class="group-member-invite">
-                  <button
-                    class="group-invite-trigger"
-                    type="button"
-                    :class="{ active: isGroupInviteOpen }"
-                    :aria-expanded="isGroupInviteOpen"
-                    @click="toggleGroupInvite"
-                  >
-                    <UserPlus :size="14" />
-                    <span>邀请成员</span>
-                  </button>
-
-                  <Transition name="property-reveal">
-                    <form v-if="isGroupInviteOpen" class="group-invite-panel" @submit.prevent="handleCreateInvitation">
-                      <header>
-                        <span><UserPlus :size="16" /></span>
-                        <div>
-                          <strong>邀请成员</strong>
-                          <small>用户名或邮箱</small>
-                        </div>
-                        <button type="button" aria-label="关闭邀请面板" @click="closeGroupInvite">
-                          <X :size="14" />
-                        </button>
-                      </header>
-
-                      <label>
-                        <span class="sr-only">被邀请用户账号</span>
-                        <input
-                          v-focus
-                          v-model="invitationAccount"
-                          type="text"
-                          maxlength="100"
-                          autocomplete="off"
-                          placeholder="输入用户名或邮箱"
-                          @input="invitationError = ''; invitationMessage = ''; latestInvitation = null"
-                        />
-                        <button type="submit" :disabled="isGroupInviteSubmitting || !isInvitationValid">
-                          <RefreshCw v-if="isGroupInviteSubmitting" class="spin-icon" :size="14" />
-                          <SendHorizontal v-else :size="14" />
-                          <span>{{ isGroupInviteSubmitting ? '发送中' : '发送邀请' }}</span>
-                        </button>
-                      </label>
-
-                      <p v-if="invitationError" class="group-invite-feedback error" role="alert">{{ invitationError }}</p>
-                      <p v-if="invitationMessage" class="group-invite-feedback success" role="status">
-                        <Check :size="14" />
-                        <span>{{ invitationMessage }}</span>
-                      </p>
-                    </form>
-                  </Transition>
-                </div>
-              </div>
-            </header>
-
-            <div v-if="groupMembers.length" class="group-member-list">
-              <article v-for="member in groupMembers" :key="member.userId" class="group-member-row">
-                <span class="group-member-avatar">{{ groupInitial(member.username) }}</span>
-                <div>
-                  <strong>{{ member.username }}</strong>
-                  <small>{{ String(member.userId) === String(selectedGroup.ownerId) ? '工作组创建者' : '工作组成员' }}</small>
-                </div>
-                <span class="group-member-role" :class="{ owner: member.role === 'OWNER' }">
-                  <Crown v-if="member.role === 'OWNER'" :size="13" />
-                  <UsersRound v-else :size="13" />
-                  {{ groupRoleLabel(member.role) }}
-                </span>
-                <time>{{ formatGroupDate(member.joinedAt) }}加入</time>
-              </article>
-            </div>
-
-            <div v-else class="group-members-empty">
-              <UsersRound :size="28" />
-              <span>暂无成员信息</span>
-            </div>
-          </section>
-        </section>
-      </template>
-
-      <template v-else>
-      <header class="board-header">
-        <div class="board-title">
-          <button class="mobile-menu-button" type="button" aria-label="打开导航" @click="isSidebarOpen = true">
-            <Menu :size="20" />
-            <b v-if="pendingInvitationCount">{{ pendingInvitationCount > 99 ? '99+' : pendingInvitationCount }}</b>
-          </button>
-          <p class="date-line">{{ new Date().toLocaleDateString('zh-CN', { weekday: 'long', month: 'long', day: 'numeric' }) }}</p>
-          <h1>{{ currentView.label }}</h1>
-        </div>
-
-        <div class="board-tools">
-          <div class="search-box search-box-compact">
-            <Search :size="17" />
-            <input v-model="query" type="search" placeholder="搜索标题或描述" aria-label="搜索任务" />
-            <button v-if="query" type="button" aria-label="清除搜索" title="清除搜索" @click="clearSearch">
-              <X :size="15" />
-            </button>
-          </div>
-
-          <div ref="reminderMenuRef" class="reminder-menu">
-            <button
-              class="tool-button reminder-trigger"
-              type="button"
-              aria-label="查看即将到期任务"
-              @click="isReminderOpen = !isReminderOpen; isFilterOpen = false"
-            >
-              <Bell :size="17" />
-              <span>未来 60 分钟</span>
-              <b v-if="reminders.length">{{ reminders.length }}</b>
-            </button>
-
-            <div v-if="isReminderOpen" class="reminder-popover">
-              <div class="reminder-heading">
-                <div>
-                  <span>即将到期</span>
-                  <strong>未来 60 分钟</strong>
-                </div>
-                <Bell :size="17" />
-              </div>
-
-              <button
-                v-for="reminder in reminders"
-                :key="reminder.id"
-                class="reminder-item"
-                type="button"
-                @click="openTaskDetail(reminder)"
-              >
-                <span>{{ reminder.title }}</span>
-                <time>{{ formatDueAt(reminder.dueAt) }}</time>
-              </button>
-
-              <p v-if="!reminders.length" class="reminder-empty">这段时间很从容，没有临近截止的任务。</p>
-            </div>
-          </div>
-
-          <div ref="filterMenuRef" class="filter-menu">
-            <button
-              class="tool-button"
-              type="button"
-              :class="{ active: isFilterOpen }"
-              @click="isFilterOpen = !isFilterOpen; isReminderOpen = false"
-            >
-              <SlidersHorizontal :size="17" />
-              <span>筛选</span>
-              <b v-if="hasListFilters">{{ Number(Boolean(listFilters.status)) + Number(Boolean(listFilters.priority)) }}</b>
-            </button>
-
-            <div v-if="isFilterOpen" class="filter-popover">
-              <div class="filter-popover-heading">
-                <strong>筛选任务</strong>
-                <button v-if="hasServerQuery" type="button" @click="clearListFilters">清除</button>
-              </div>
-
-              <div class="filter-section">
-                <span>状态</span>
-                <div class="filter-group">
-                  <button type="button" :class="{ active: !listFilters.status }" @click="setListStatus('')">全部</button>
-                  <button
-                    v-for="option in statusOptions"
-                    :key="option.value"
-                    type="button"
-                    :class="{ active: listFilters.status === option.value }"
-                    @click="setListStatus(option.value)"
-                  >
-                    {{ option.label }}
-                  </button>
-                </div>
-              </div>
-
-              <div class="filter-section priority-filter-section">
-                <span>优先级</span>
-                <div class="filter-group">
-                  <button type="button" :class="{ active: !listFilters.priority }" @click="setListPriority('')">全部</button>
-                  <button
-                    v-for="option in priorityOptions"
-                    :key="option.value"
-                    type="button"
-                    :class="{ active: listFilters.priority === option.value }"
-                    @click="setListPriority(option.value)"
-                  >
-                    {{ option.label }}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-        </div>
-
-        <div class="board-primary-actions">
-          <button class="tool-button ai-trigger" type="button" @click="openAiAdvisor">
-            <WandSparkles :size="17" />
-            <span>AI 规划</span>
-          </button>
-
-          <button class="primary-button create-trigger" type="button" @click="openComposer">
-            <Plus :size="17" />
-            <span>新建任务</span>
-          </button>
-        </div>
-      </header>
-
-      <div class="board-summary" aria-label="任务概览">
-        <span><b>{{ currentViewStats.total }}</b> 当前视图</span>
-        <span><b>{{ currentViewStats.todo }}</b> 待办</span>
-        <span><b>{{ currentViewStats.dueToday }}</b> 今天截止</span>
-        <span v-if="currentViewStats.overdue" class="summary-overdue"><b>{{ currentViewStats.overdue }}</b> 已逾期</span>
-      </div>
-
-      <div v-if="errorMessage" class="notice error list-error" role="alert">
-        <span>{{ errorMessage }}</span>
-        <button type="button" @click="refreshTasks">重试</button>
-      </div>
-      <div v-if="isTaskListLoading" class="task-list">
-        <template v-for="index in 5" :key="index">
-          <div class="task-skeleton" aria-hidden="true">
-            <span></span>
-            <div><i></i><i></i></div>
-            <em></em>
-          </div>
-        </template>
-      </div>
-
-      <div v-else-if="visibleTasks.length" class="task-groups">
-        <section
-          v-for="group in visibleTaskGroups"
-          :key="group.key"
-          class="task-group"
-          :class="{ 'completed-task-group': group.completed }"
-        >
-          <button
-            v-if="group.completed"
-            class="completed-group-toggle"
-            type="button"
-            :aria-expanded="isCompletedGroupOpen"
-            @click="isCompletedGroupOpen = !isCompletedGroupOpen"
-          >
-            <ChevronRight class="completed-group-chevron" :class="{ open: isCompletedGroupOpen }" :size="17" />
-            <span>已完成</span>
-            <b>{{ group.tasks.length }}</b>
-          </button>
-
-          <Transition name="completed-list">
-            <VueDraggable
-              v-show="!group.completed || isCompletedGroupOpen"
-              :list="group.tasks"
-              item-key="id"
-              tag="div"
-              class="task-list"
-              :class="{ 'completed-task-list': group.completed }"
-              :group="{ name: group.completed ? 'completed-tasks' : 'active-tasks', pull: false, put: false }"
-              handle=".task-drag-handle"
-              ghost-class="task-drag-ghost"
-              chosen-class="task-drag-chosen"
-              drag-class="task-drag-active"
-              :animation="190"
-              :delay="150"
-              :delay-on-touch-only="true"
-              :touch-start-threshold="4"
-              @start="handleTaskDragStart"
-              @end="handleTaskDragEnd(group.tasks)"
-            >
-              <template #header>
-                <div v-if="!group.completed" class="task-list-columns" aria-hidden="true">
-                  <span></span>
-                  <span>任务</span>
-                  <span>执行进度</span>
-                  <span>截止时间</span>
-                </div>
-              </template>
-
-              <template #item="{ element: task }">
-                <article
-                  class="task-item"
-                  :class="[
-                    `status-${task.status}`,
-                    {
-                      selected: selectedTask?.id === task.id,
-                      done: task.status === 'DONE',
-                      dragging: String(draggingTaskId) === String(task.id)
-                    }
-                  ]"
-                  :data-task-id="task.id"
-                  tabindex="0"
-                  @click="handleTaskItemClick(task)"
-                  @keydown.enter="handleTaskItemClick(task)"
-                >
-                  <div class="task-leading-actions" @click.stop>
-                    <button
-                      class="task-check"
-                      type="button"
-                      :class="{ done: task.status === 'DONE' }"
-                      :aria-label="task.status === 'DONE' ? '恢复任务' : '完成任务'"
-                      @click="toggleTaskDone(task)"
-                    >
-                      <Check v-if="task.status === 'DONE'" :size="14" />
-                    </button>
-                    <button
-                      class="task-drag-handle"
-                      type="button"
-                      :aria-label="`调整任务“${task.title}”的顺序`"
-                      title="拖动排序；也可使用上下方向键"
-                      @keydown.up.stop.prevent="moveTaskWithKeyboard(task, group.tasks, -1)"
-                      @keydown.down.stop.prevent="moveTaskWithKeyboard(task, group.tasks, 1)"
-                    >
-                      <GripVertical :size="15" />
-                    </button>
-                  </div>
-                  <div class="task-content">
-                    <div class="task-title-row">
-                      <h2>{{ task.title }}</h2>
-                      <span
-                        class="task-priority-mark"
-                        :class="`priority-${task.priority || 'MEDIUM'}`"
-                        :title="`${priorityText(task.priority)}优先级`"
-                        :aria-label="`${priorityText(task.priority)}优先级`"
-                      >
-                        <Flag :size="11" />
-                        <span>{{ priorityText(task.priority) }}</span>
-                      </span>
-                      <span v-if="task.status !== 'DONE'" class="task-status-mark" :class="`status-${task.status}`">
-                        <Circle v-if="task.status === 'TODO'" :size="10" />
-                        <RefreshCw v-else :size="10" />
-                        {{ statusText(task.status) }}
-                      </span>
-                    </div>
-                  </div>
-                  <div
-                    class="task-step-summary"
-                    :class="{
-                      loading: getTaskStepStats(task.id).loading,
-                      unavailable: getTaskStepStats(task.id).error,
-                      complete: getTaskStepStats(task.id).progress === 100
-                    }"
-                  >
-                    <div class="task-step-copy">
-                      <ListChecks :size="13" />
-                      <span>{{ taskStepListLabel(task.id) }}</span>
-                      <b v-if="!getTaskStepStats(task.id).loading && !getTaskStepStats(task.id).error">
-                        {{ getTaskStepStats(task.id).progress }}%
-                      </b>
-                    </div>
-                    <div
-                      class="task-step-track"
-                      role="progressbar"
-                      :aria-label="`${task.title}的步骤完成进度`"
-                      :aria-valuenow="getTaskStepStats(task.id).progress"
-                      aria-valuemin="0"
-                      aria-valuemax="100"
-                    >
-                      <span :style="{ width: `${getTaskStepStats(task.id).progress}%` }"></span>
-                    </div>
-                  </div>
-                  <div class="task-meta">
-                    <span v-if="task.dueAt" class="task-due" :class="{ overdue: isTaskOverdue(task) }">
-                      <CalendarDays :size="14" />
-                      {{ formatDueAt(task.dueAt) }}
-                    </span>
-                  </div>
-                </article>
-              </template>
-            </VueDraggable>
-          </Transition>
-        </section>
-      </div>
-
-      <div v-else class="task-list">
-        <section class="empty-panel">
-          <ListTodo :size="34" />
-          <h2>{{ emptyState.title }}</h2>
-          <p>{{ emptyState.description }}</p>
-          <button type="button" @click="handleEmptyAction">{{ emptyState.action }}</button>
-        </section>
-      </div>
-
-      <div v-if="taskPage.pages > 1 || taskPage.total > 10" class="pagination-bar">
-        <div class="page-info">
-          <span>共 {{ taskPage.total }} 条</span>
-          <strong>{{ taskPage.page }} / {{ taskPage.pages || 1 }}</strong>
-        </div>
-
-        <div class="page-actions">
-          <button class="page-arrow" type="button" :disabled="taskPage.page <= 1" @click="changePage(taskPage.page - 1)">
-            <ChevronLeft :size="17" />
-            <span>上一页</span>
-          </button>
-          <button class="page-arrow" type="button" :disabled="taskPage.page >= taskPage.pages" @click="changePage(taskPage.page + 1)">
-            <span>下一页</span>
-            <ChevronRight :size="17" />
-          </button>
-        </div>
-
-        <label class="page-size-select">
-          <span class="sr-only">每页显示数量</span>
-          <select :value="taskPage.size" aria-label="每页显示数量" @change="changePageSize(Number($event.target.value))">
-            <option v-for="size in [10, 20, 50]" :key="size" :value="size">{{ size }} 条 / 页</option>
-          </select>
-          <ChevronDown :size="15" />
-        </label>
-      </div>
-      </template>
-
-      <Transition name="ai-overlay">
-        <div v-if="isAiAdvisorOpen" class="ai-advisor-overlay" @click.self="closeAiAdvisor">
-          <section class="ai-advisor" role="dialog" aria-modal="true" aria-labelledby="ai-advisor-title">
-            <div class="ai-decoration" aria-hidden="true">
-              <span></span>
-              <span></span>
-              <span></span>
-            </div>
-
-            <header class="ai-advisor-header">
-              <div class="ai-heading-mark"><BrainCircuit :size="22" /></div>
-              <div class="ai-heading-copy">
-                <span>AI FOCUS STUDIO</span>
-                <h2 id="ai-advisor-title">现在，先做什么？</h2>
-              </div>
-              <button class="icon-button ai-close" type="button" aria-label="关闭 AI 规划" @click="closeAiAdvisor">
-                <X :size="19" />
-              </button>
-            </header>
-
-            <div class="ai-context-strip" aria-label="当前任务上下文">
-              <span><b>{{ unfinishedTaskCount }}</b> 未完成</span>
-              <span><b>{{ taskStats.inProgress }}</b> 进行中</span>
-              <span><b>{{ taskStats.highPriority }}</b> 高优先级</span>
-              <span><b>{{ taskStats.dueToday }}</b> 今天截止</span>
-            </div>
-
-            <div class="ai-workspace">
-              <form class="ai-prompt-panel" @submit.prevent="handleAiAdviceSubmit">
-                <div class="ai-section-heading">
-                  <span>01</span>
-                  <div>
-                    <small>CONTEXT</small>
-                    <h3>补充你的当前状态</h3>
-                  </div>
-                </div>
-
-                <div class="ai-prompt-options" aria-label="快捷咨询条件">
-                  <button
-                    v-for="option in aiPromptOptions"
-                    :key="option.label"
-                    type="button"
-                    :class="{ active: aiMessage === option.prompt }"
-                    @click="applyAiPrompt(option.prompt)"
-                  >
-                    <component :is="option.icon" :size="15" />
-                    <span>{{ option.label }}</span>
-                  </button>
-                </div>
-
-                <label class="ai-message-field">
-                  <span class="sr-only">咨询内容</span>
-                  <textarea
-                    ref="aiMessageInputRef"
-                    v-model="aiMessage"
-                    maxlength="1000"
-                    rows="7"
-                    placeholder="例如：我现在有 40 分钟，精力一般，希望先推进最紧急的任务。"
-                    @keydown.ctrl.enter.prevent="handleAiAdviceSubmit"
-                    @keydown.meta.enter.prevent="handleAiAdviceSubmit"
-                  ></textarea>
-                </label>
-
-                <p v-if="aiError" class="notice error ai-error" role="alert">{{ aiError }}</p>
-
-                <div class="ai-prompt-footer">
-                  <span :class="{ over: aiMessage.length > 1000 }">{{ aiMessage.length }} / 1000</span>
-                  <button class="ai-submit" type="submit" :disabled="isAiSubmitting || !isAiMessageValid">
-                    <SendHorizontal :size="16" />
-                    <span>{{ isAiSubmitting ? '正在规划' : aiAdvice ? '重新规划' : '生成安排' }}</span>
-                  </button>
-                </div>
-              </form>
-
-              <section class="ai-response-panel" aria-live="polite">
-                <div class="ai-section-heading response-heading">
-                  <span>02</span>
-                  <div>
-                    <small>FOCUS PLAN</small>
-                    <h3>本次安排</h3>
-                  </div>
-                  <button
-                    v-if="aiAdvice && !isAiSubmitting"
-                    class="ai-copy"
-                    type="button"
-                    :aria-label="aiCopied ? '已复制建议' : '复制建议'"
-                    :title="aiCopied ? '已复制' : '复制建议'"
-                    @click="copyAiAdvice"
-                  >
-                    <Check v-if="aiCopied" :size="15" />
-                    <Copy v-else :size="15" />
-                  </button>
-                </div>
-
-                <div v-if="isAiSubmitting" class="ai-thinking" role="status">
-                  <div class="thinking-lines" aria-hidden="true">
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                  </div>
-                  <p>正在结合任务进度与截止时间...</p>
-                </div>
-
-                <article v-else-if="aiAdvice" class="ai-advice-content">
-                  <template v-for="(block, index) in aiAdviceBlocks" :key="`${block.type}-${index}`">
-                    <h4 v-if="block.type === 'heading'">{{ block.text }}</h4>
-                    <ol v-else-if="block.type === 'ordered'">
-                      <li v-for="item in block.items" :key="item">{{ item }}</li>
-                    </ol>
-                    <ul v-else-if="block.type === 'unordered'">
-                      <li v-for="item in block.items" :key="item">{{ item }}</li>
-                    </ul>
-                    <p v-else>{{ block.text }}</p>
-                  </template>
-                </article>
-
-                <div v-else class="ai-waiting">
-                  <BrainCircuit :size="34" />
-                  <strong>等待本次规划</strong>
-                  <span>把此刻的时间和精力写下来。</span>
-                </div>
-              </section>
-            </div>
-          </section>
-        </div>
-      </Transition>
-
-      <Teleport to="body">
-        <Transition name="delete-dialog">
-          <div v-if="isConfirmationDialogOpen" class="delete-dialog-overlay" @click.self="closeConfirmationDialog">
-            <section
-              class="delete-dialog"
-              :class="`${confirmationDialogContent.kind}-dialog`"
-              role="alertdialog"
-              aria-modal="true"
-              aria-labelledby="delete-dialog-title"
-              aria-describedby="delete-dialog-description"
-              @keydown="handleDeleteDialogKeydown"
-            >
-              <header class="delete-dialog-header">
-                <span class="delete-dialog-mark">
-                  <component :is="confirmationDialogContent.icon" :size="20" />
-                </span>
-                <span>{{ confirmationDialogContent.eyebrow }}</span>
-                <button
-                  class="icon-button delete-dialog-close"
-                  type="button"
-                  aria-label="关闭确认窗口"
-                  :disabled="isConfirmationPending"
-                  @click="closeConfirmationDialog"
-                >
-                  <X :size="18" />
-                </button>
-              </header>
-
-              <div class="delete-dialog-copy">
-                <h2 id="delete-dialog-title">{{ confirmationDialogContent.title }}</h2>
-                <p id="delete-dialog-description">{{ confirmationDialogContent.description }}</p>
-              </div>
-
-              <div class="delete-dialog-warning">
-                <component :is="confirmationDialogContent.warningIcon" :size="16" />
-                <span>{{ confirmationDialogContent.warning }}</span>
-              </div>
-
-              <p v-if="confirmationDialogContent.kind !== 'logout' && deleteDialogError" class="delete-dialog-error" role="alert">
-                {{ deleteDialogError }}
-              </p>
-
-              <footer class="delete-dialog-actions">
-                <button
-                  ref="deleteCancelButtonRef"
-                  class="delete-cancel-button"
-                  type="button"
-                  :disabled="isConfirmationPending"
-                  @click="closeConfirmationDialog"
-                >
-                  取消
-                </button>
-                <button
-                  class="delete-confirm-button"
-                  :class="{
-                    'logout-confirm-button': isLogoutConfirmOpen,
-                    'leave-group-confirm-button': isGroupLeaveConfirmOpen
-                  }"
-                  type="button"
-                  :disabled="isConfirmationPending"
-                  @click="confirmDialogAction"
-                >
-                  <RefreshCw v-if="isConfirmationPending" class="spin-icon" :size="16" />
-                  <component :is="confirmationDialogContent.icon" v-else :size="16" />
-                  <span>{{ isConfirmationPending ? confirmationDialogContent.busyLabel : confirmationDialogContent.confirmLabel }}</span>
-                </button>
-              </footer>
-            </section>
-          </div>
-        </Transition>
-      </Teleport>
+      <ConfirmationDialog
+        ref="deleteCancelButtonRef"
+        :open="isConfirmationDialogOpen"
+        :content="confirmationDialogContent"
+        :pending="isConfirmationPending"
+        :error-message="deleteDialogError"
+        @close="closeConfirmationDialog"
+        @confirm="confirmDialogAction"
+        @keydown="handleDeleteDialogKeydown"
+      />
     </section>
 
-    <aside v-if="isGroupComposerOpen" class="detail-panel create-panel group-create-panel">
-      <div
-        class="detail-resize-handle"
-        role="separator"
-        aria-label="调整工作组创建栏宽度"
-        aria-orientation="vertical"
-        :aria-valuemin="detailPanelBounds.min"
-        :aria-valuemax="detailPanelBounds.max"
-        :aria-valuenow="detailPanelWidth"
-        tabindex="0"
-        title="拖动调整创建栏宽度，双击恢复默认"
-        @pointerdown="startDetailResize"
-        @dblclick="resetDetailPanelWidth"
-        @keydown="handleDetailResizeKeydown"
-      >
-        <GripVertical :size="15" />
-        <span v-if="isDetailResizing">{{ detailPanelWidth }} px</span>
-      </div>
+    <GroupComposer
+      v-model:name="groupForm.name"
+      v-model:description="groupForm.description"
+      :open="isGroupComposerOpen"
+      :submitting="isGroupSubmitting"
+      :valid="isGroupFormValid"
+      :error-message="groupFormError"
+      :panel-width="detailPanelWidth"
+      :panel-bounds="detailPanelBounds"
+      :resizing="isDetailResizing"
+      @close="closeGroupComposer"
+      @submit="handleCreateGroup"
+      @clear-error="groupFormError = ''"
+      @resize-start="startDetailResize"
+      @resize-reset="resetDetailPanelWidth"
+      @resize-keydown="handleDetailResizeKeydown"
+    />
 
-      <div class="detail-panel-scroll create-panel-scroll">
-        <header class="detail-header create-panel-header">
-          <div class="detail-heading-copy">
-            <p>创建工作组</p>
-            <span>新的协作空间</span>
-          </div>
-          <button
-            type="button"
-            class="icon-button"
-            aria-label="关闭创建工作组"
-            :disabled="isGroupSubmitting"
-            @click="closeGroupComposer"
-          >
-            <X :size="18" />
-          </button>
-        </header>
-
-        <form class="create-detail-form group-create-form" @submit.prevent="handleCreateGroup">
-          <div class="group-create-intro">
-            <span><Building2 :size="22" /></span>
-            <div>
-              <strong>建立工作组</strong>
-              <p>名称和描述会展示给工作组成员。</p>
-            </div>
-          </div>
-
-          <label class="create-title-field group-name-field">
-            <span>工作组名称</span>
-            <input
-              v-focus
-              v-model="groupForm.name"
-              type="text"
-              maxlength="100"
-              placeholder="例如：课程项目组"
-              @input="groupFormError = ''"
-            />
-            <small>{{ groupForm.name.length }} / 100</small>
-          </label>
-
-          <label class="group-description-field">
-            <span>工作组描述</span>
-            <textarea
-              v-model="groupForm.description"
-              maxlength="500"
-              rows="7"
-              placeholder="记录工作组的目标、范围或协作约定"
-              @input="groupFormError = ''"
-            ></textarea>
-            <small>{{ groupForm.description.length }} / 500</small>
-          </label>
-
-          <p v-if="groupFormError" class="notice error create-panel-error" role="alert">{{ groupFormError }}</p>
-
-          <footer class="create-panel-actions">
-            <button type="button" :disabled="isGroupSubmitting" @click="closeGroupComposer">取消</button>
-            <button class="primary-button" type="submit" :disabled="isGroupSubmitting || !isGroupFormValid">
-              <RefreshCw v-if="isGroupSubmitting" class="spin-icon" :size="16" />
-              <FolderPlus v-else :size="17" />
-              <span>{{ isGroupSubmitting ? '创建中...' : '创建工作组' }}</span>
-            </button>
-          </footer>
-        </form>
-      </div>
-    </aside>
-
-    <aside v-if="isComposerOpen" class="detail-panel create-panel">
-      <div
-        class="detail-resize-handle"
-        role="separator"
-        aria-label="调整新建任务栏宽度"
-        aria-orientation="vertical"
-        :aria-valuemin="detailPanelBounds.min"
-        :aria-valuemax="detailPanelBounds.max"
-        :aria-valuenow="detailPanelWidth"
-        tabindex="0"
-        title="拖动调整创建栏宽度，双击恢复默认"
-        @pointerdown="startDetailResize"
-        @dblclick="resetDetailPanelWidth"
-        @keydown="handleDetailResizeKeydown"
-      >
-        <GripVertical :size="15" />
-        <span v-if="isDetailResizing">{{ detailPanelWidth }} px</span>
-      </div>
-
-      <div class="detail-panel-scroll create-panel-scroll">
-        <header class="detail-header create-panel-header">
-          <div class="detail-heading-copy">
-            <p>创建任务</p>
-            <span>{{ currentView.label }}</span>
-          </div>
-          <button
-            type="button"
-            class="icon-button"
-            aria-label="关闭新建任务"
-            :disabled="isTaskSubmitting"
-            @click="closeComposer"
-          >
-            <X :size="18" />
-          </button>
-        </header>
-
-        <form class="create-detail-form" @submit.prevent="handleCreateTask">
-          <label class="create-title-field">
-            <span>任务标题</span>
-            <input
-              v-focus
-              v-model="taskForm.title"
-              type="text"
-              maxlength="100"
-              placeholder="准备做什么？"
-              @input="composerError = ''"
-            />
-            <small>{{ taskForm.title.length }} / 100</small>
-          </label>
-
-          <section class="create-form-section create-properties-section">
-            <div class="create-section-heading">
-              <div>
-                <span class="create-section-icon status-icon"><Circle :size="16" /></span>
-                <strong>状态</strong>
-              </div>
-            </div>
-            <div class="create-choice-grid status-choice-grid" aria-label="任务状态">
-              <button
-                v-for="option in statusOptions"
-                :key="option.value"
-                type="button"
-                :class="[`status-${option.value}`, { active: taskForm.status === option.value }]"
-                @click="taskForm.status = option.value"
-              >
-                <Circle v-if="option.value === 'TODO'" :size="15" />
-                <RefreshCw v-else-if="option.value === 'IN_PROGRESS'" :size="15" />
-                <Check v-else :size="15" />
-                <span>{{ option.label }}</span>
-              </button>
-            </div>
-
-            <div class="create-section-heading priority-create-heading">
-              <div>
-                <span class="create-section-icon priority-icon"><Flag :size="16" /></span>
-                <strong>优先级</strong>
-              </div>
-            </div>
-            <div class="create-choice-grid priority-choice-grid" aria-label="任务优先级">
-              <button
-                v-for="option in priorityOptions"
-                :key="option.value"
-                type="button"
-                :class="[option.tone, { active: taskForm.priority === option.value }]"
-                @click="taskForm.priority = option.value"
-              >
-                <Flag :size="14" />
-                <span>{{ option.label }}</span>
-              </button>
-            </div>
-          </section>
-
-          <section class="create-form-section">
-            <div class="create-section-heading">
-              <div>
-                <span class="create-section-icon description-icon"><AlignLeft :size="16" /></span>
-                <strong>描述</strong>
-              </div>
-              <small>{{ taskForm.description.length }} / 100</small>
-            </div>
-            <textarea
-              v-model="taskForm.description"
-              maxlength="100"
-              rows="4"
-              placeholder="补充任务背景、目标或注意事项"
-              @input="composerError = ''"
-            ></textarea>
-          </section>
-
-          <section class="create-form-section create-due-section">
-            <div class="create-section-heading">
-              <div>
-                <span class="create-section-icon due-icon"><CalendarDays :size="16" /></span>
-                <span>
-                  <strong>截止时间</strong>
-                  <small>{{ createDueLabel }}</small>
-                </span>
-              </div>
-              <button v-if="hasCreateDueValue" type="button" @click="clearCreateDue">
-                清除
-              </button>
-            </div>
-
-            <div class="create-due-presets">
-              <button
-                v-for="preset in duePresetOptions"
-                :key="preset.value"
-                type="button"
-                :class="{ active: isCreateDuePresetActive(preset.value) }"
-                @click="applyCreateDuePreset(preset.value)"
-              >
-                <strong>{{ preset.label }}</strong>
-                <small>{{ preset.meta }}</small>
-              </button>
-            </div>
-
-            <button
-              class="due-custom-toggle"
-              type="button"
-              :class="{ open: isCreateCustomDueOpen }"
-              :aria-expanded="isCreateCustomDueOpen"
-              @click="toggleCreateCustomDue"
-            >
-              <span><Clock3 :size="15" /> 自定义日期与时间</span>
-              <ChevronDown :size="15" />
-            </button>
-
-            <Transition name="property-reveal">
-              <div v-if="isCreateCustomDueOpen" class="due-custom-fields">
-                <div class="date-part-grid create-date-grid" aria-label="新任务截止日期">
-                  <label>
-                    <span>年</span>
-                    <input
-                      :value="createDateParts.year"
-                      inputmode="numeric"
-                      maxlength="4"
-                      placeholder="2026"
-                      @input="updateCreateDatePart('year', $event.target.value)"
-                    />
-                  </label>
-                  <label>
-                    <span>月</span>
-                    <input
-                      :value="createDateParts.month"
-                      inputmode="numeric"
-                      maxlength="2"
-                      placeholder="07"
-                      @input="updateCreateDatePart('month', $event.target.value)"
-                    />
-                  </label>
-                  <label>
-                    <span>日</span>
-                    <input
-                      :value="createDateParts.day"
-                      inputmode="numeric"
-                      maxlength="2"
-                      placeholder="31"
-                      @input="updateCreateDatePart('day', $event.target.value)"
-                    />
-                  </label>
-                </div>
-
-                <div class="time-part-grid create-time-grid" aria-label="新任务截止时间">
-                  <label>
-                    <span>时</span>
-                    <input
-                      :value="createTimeParts.hour"
-                      inputmode="numeric"
-                      maxlength="2"
-                      placeholder="23"
-                      @input="updateCreateTimePart('hour', $event.target.value)"
-                    />
-                  </label>
-                  <i>:</i>
-                  <label>
-                    <span>分</span>
-                    <input
-                      :value="createTimeParts.minute"
-                      inputmode="numeric"
-                      maxlength="2"
-                      placeholder="59"
-                      @input="updateCreateTimePart('minute', $event.target.value)"
-                    />
-                  </label>
-                </div>
-              </div>
-            </Transition>
-          </section>
-
-          <section class="create-form-section create-steps-section">
-            <div class="create-section-heading">
-              <div>
-                <span class="create-section-icon steps-icon"><ListChecks :size="17" /></span>
-                <span>
-                  <strong>执行步骤</strong>
-                  <small>{{ createStepDrafts.length ? `${createStepDrafts.length} 个步骤` : '尚未添加' }}</small>
-                </span>
-              </div>
-            </div>
-
-            <TransitionGroup v-if="createStepDrafts.length" name="create-step" tag="div" class="create-step-list">
-              <div v-for="(step, index) in createStepDrafts" :key="step.id" class="create-step-row">
-                <span>{{ index + 1 }}</span>
-                <p>{{ step.title }}</p>
-                <button type="button" :aria-label="`移除步骤 ${step.title}`" title="移除" @click="removeCreateStep(step.id)">
-                  <X :size="14" />
-                </button>
-              </div>
-            </TransitionGroup>
-
-            <div class="create-step-composer">
-              <Plus :size="16" />
-              <input
-                v-model="createStepDraft"
-                type="text"
-                maxlength="100"
-                placeholder="添加一个执行步骤"
-                @input="composerError = ''"
-                @keydown.enter.prevent="addCreateStep"
-              />
-              <button
-                type="button"
-                :disabled="!createStepDraft.trim()"
-                aria-label="添加执行步骤"
-                @click="addCreateStep"
-              >
-                <Plus :size="15" />
-              </button>
-            </div>
-          </section>
-
-          <p v-if="composerError" class="notice error create-panel-error" role="alert">{{ composerError }}</p>
-
-          <footer class="create-panel-actions">
-            <button type="button" :disabled="isTaskSubmitting" @click="closeComposer">取消</button>
-            <button class="primary-button" type="submit" :disabled="isTaskSubmitting || !isTaskValid">
-              <RefreshCw v-if="isTaskSubmitting" class="spin-icon" :size="16" />
-              <Plus v-else :size="17" />
-              <span>{{ isTaskSubmitting ? '创建中...' : '创建任务' }}</span>
-            </button>
-          </footer>
-        </form>
-      </div>
-    </aside>
+    <TaskComposer
+      v-model:title="taskForm.title"
+      v-model:description="taskForm.description"
+      v-model:status="taskForm.status"
+      v-model:priority="taskForm.priority"
+      v-model:step-draft="createStepDraft"
+      :open="isComposerOpen"
+      :view-label="currentView.label"
+      :submitting="isTaskSubmitting"
+      :valid="isTaskValid"
+      :error-message="composerError"
+      :status-options="statusOptions"
+      :priority-options="priorityOptions"
+      :due-label="createDueLabel"
+      :has-due-value="hasCreateDueValue"
+      :due-presets="duePresetOptions"
+      :is-due-preset-active="isCreateDuePresetActive"
+      :custom-due-open="isCreateCustomDueOpen"
+      :date-parts="createDateParts"
+      :time-parts="createTimeParts"
+      :step-drafts="createStepDrafts"
+      :panel-width="detailPanelWidth"
+      :panel-bounds="detailPanelBounds"
+      :resizing="isDetailResizing"
+      v-on:close="closeComposer"
+      v-on:submit="handleCreateTask"
+      v-on:clear-error="composerError = ''"
+      v-on:clear-due="clearCreateDue"
+      v-on:apply-due-preset="applyCreateDuePreset"
+      v-on:toggle-custom-due="toggleCreateCustomDue"
+      v-on:update-date-part="updateCreateDatePart"
+      v-on:update-time-part="updateCreateTimePart"
+      v-on:add-step="addCreateStep"
+      v-on:remove-step="removeCreateStep"
+      v-on:resize-start="startDetailResize"
+      v-on:resize-reset="resetDetailPanelWidth"
+      v-on:resize-keydown="handleDetailResizeKeydown"
+    />
 
     <aside v-if="selectedTask" class="detail-panel">
       <div

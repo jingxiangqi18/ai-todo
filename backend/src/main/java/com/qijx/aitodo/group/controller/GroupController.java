@@ -7,6 +7,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -16,6 +17,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.qijx.aitodo.group.dto.GroupCreateRequest;
 import com.qijx.aitodo.group.dto.GroupMemberResponse;
+import com.qijx.aitodo.group.dto.GroupMemberRoleUpdateRequest;
 import com.qijx.aitodo.group.dto.GroupResponse;
 import com.qijx.aitodo.group.dto.InvitationCreateRequest;
 import com.qijx.aitodo.group.dto.InvitationResponse;
@@ -85,5 +87,15 @@ public class GroupController {
         @PathVariable Long groupId
     ){
         groupService.leaveGroup(userId, groupId);
+    }
+
+    @PatchMapping("/{groupId}/members/{memberUserId}/role")
+    public GroupMemberResponse updateMemberRole(
+        @AuthenticationPrincipal Long userId,
+        @PathVariable Long groupId,
+        @PathVariable Long memberUserId,
+        @RequestBody GroupMemberRoleUpdateRequest request
+    ){
+        return groupService.updateMemberRole(userId, groupId, memberUserId, request);
     }
 }

@@ -1,0 +1,248 @@
+/* Destructive action dialog */
+.delete-dialog-overlay {
+  position: fixed;
+  z-index: calc(var(--z-modal) + 5);
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgb(37 37 49 / 54%);
+  backdrop-filter: blur(9px) saturate(0.78);
+}
+
+.delete-dialog {
+  position: relative;
+  width: min(430px, 100%);
+  overflow: hidden;
+  color: var(--color-text);
+  background: #fdfcfd;
+  border: 1px solid rgb(255 255 255 / 74%);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 30px 86px rgb(37 35 48 / 32%);
+}
+
+.delete-dialog::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  content: "";
+  background: linear-gradient(90deg, #9a7990, #bd6e78 58%, #7f8bab);
+}
+
+.delete-dialog.logout-dialog::before {
+  background: linear-gradient(90deg, #6f8e9b, #737d9e 58%, #9a7d90);
+}
+
+.delete-dialog.leave-group-dialog::before {
+  background: linear-gradient(90deg, #768b9c, #9a7890 58%, #b66c78);
+}
+
+.delete-dialog-header {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 34px;
+  gap: 10px;
+  align-items: center;
+  padding: 21px 22px 12px;
+}
+
+.delete-dialog-header > span:nth-child(2) {
+  color: #9a7789;
+  font-size: 9px;
+  font-weight: 760;
+}
+
+.delete-dialog-mark {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border: 1px solid #f0d3d9;
+  border-radius: var(--radius-md);
+}
+
+.logout-dialog .delete-dialog-mark {
+  color: var(--color-brand-hover);
+  background: var(--color-brand-soft);
+  border-color: #d5d8e7;
+}
+
+.leave-group-dialog .delete-dialog-mark {
+  color: #916272;
+  background: #f6eaee;
+  border-color: #ead2da;
+}
+
+.delete-dialog-close {
+  width: 34px;
+  height: 34px;
+  color: #777784;
+}
+
+.delete-dialog-close:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.delete-dialog-copy {
+  padding: 6px 22px 18px 68px;
+}
+
+.delete-dialog-copy h2 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.delete-dialog-copy p {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.delete-dialog-warning {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 40px;
+  margin: 0 22px;
+  padding: 0 12px;
+  color: #806d77;
+  background: #f6f0f3;
+  border: 1px solid #eadde3;
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  font-weight: 620;
+}
+
+.logout-dialog .delete-dialog-warning {
+  color: #616a86;
+  background: #eef0f6;
+  border-color: #dce0ec;
+}
+
+.leave-group-dialog .delete-dialog-warning {
+  color: #766b80;
+  background: #f2eff6;
+  border-color: #e2dce9;
+}
+
+.delete-dialog-error {
+  margin: 12px 22px 0;
+  padding: 9px 11px;
+  color: #974b56;
+  background: var(--color-danger-soft);
+  border: 1px solid #efccd3;
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.delete-dialog-actions {
+  display: grid;
+  grid-template-columns: 1fr 1.14fr;
+  gap: 9px;
+  margin-top: 22px;
+  padding: 15px 22px 20px;
+  background: #f6f5f8;
+  border-top: 1px solid var(--color-divider);
+}
+
+.delete-cancel-button,
+.delete-confirm-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 40px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 680;
+  cursor: pointer;
+  transition: color var(--duration-fast) ease-out, background var(--duration-fast) ease-out, border-color var(--duration-fast) ease-out, transform var(--duration-fast) ease-out;
+}
+
+.delete-cancel-button {
+  color: #5f606e;
+  background: #fdfcfd;
+  border: 1px solid var(--color-border);
+}
+
+.delete-cancel-button:hover:not(:disabled) {
+  color: var(--color-text);
+  background: #efeff4;
+  border-color: #cfd0da;
+}
+
+.delete-confirm-button {
+  color: #ffffff;
+  background: #ae5966;
+  border: 1px solid #ae5966;
+  box-shadow: 0 8px 20px rgb(174 89 102 / 19%);
+}
+
+.delete-confirm-button:hover:not(:disabled) {
+  background: #994b57;
+  border-color: #994b57;
+}
+
+.delete-confirm-button.logout-confirm-button {
+  background: var(--color-brand);
+  border-color: var(--color-brand);
+  box-shadow: 0 8px 20px rgb(93 102 137 / 19%);
+}
+
+.delete-confirm-button.logout-confirm-button:hover:not(:disabled) {
+  background: var(--color-brand-hover);
+  border-color: var(--color-brand-hover);
+}
+
+.delete-confirm-button.leave-group-confirm-button {
+  background: #9e5c69;
+  border-color: #9e5c69;
+  box-shadow: 0 8px 20px rgb(158 92 105 / 18%);
+}
+
+.delete-confirm-button.leave-group-confirm-button:hover:not(:disabled) {
+  background: #884c58;
+  border-color: #884c58;
+}
+
+.delete-cancel-button:disabled,
+.delete-confirm-button:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.spin-icon {
+  animation: spin 0.8s linear infinite;
+}
+
+.delete-dialog-enter-active,
+.delete-dialog-leave-active {
+  transition: opacity var(--duration-panel) ease-out;
+}
+
+.delete-dialog-enter-active .delete-dialog,
+.delete-dialog-leave-active .delete-dialog {
+  transition: opacity var(--duration-panel) ease-out, transform var(--duration-panel) ease-out;
+}
+
+.delete-dialog-enter-from,
+.delete-dialog-leave-to,
+.delete-dialog-enter-from .delete-dialog,
+.delete-dialog-leave-to .delete-dialog {
+  opacity: 0;
+}
+
+.delete-dialog-enter-from .delete-dialog,
+.delete-dialog-leave-to .delete-dialog {
+  transform: translateY(12px) scale(0.975);
+}
+
