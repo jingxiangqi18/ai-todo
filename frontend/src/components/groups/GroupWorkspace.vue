@@ -1,20 +1,22 @@
 <script setup>
 import {
   Check,
+  ChevronDown,
   Crown,
   FolderPlus,
   LogOut,
   Menu,
   RefreshCw,
   SendHorizontal,
+  ShieldCheck,
   UserPlus,
   UsersRound,
   X
 } from '@lucide/vue'
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { formatGroupDate, groupInitial, groupRoleLabel } from '../../utils/groups'
 
-defineProps({
+const props = defineProps({
   group: {
     type: Object,
     required: true
@@ -47,6 +49,18 @@ defineProps({
   invitationMessage: {
     type: String,
     default: ''
+  },
+  memberRolePendingUserId: {
+    type: [String, Number],
+    default: null
+  },
+  memberRoleError: {
+    type: String,
+    default: ''
+  },
+  memberRoleMessage: {
+    type: String,
+    default: ''
   }
 })
 
@@ -58,10 +72,12 @@ const emit = defineEmits([
   'toggle-invite',
   'close-invite',
   'submit-invite',
-  'clear-invitation-feedback'
+  'clear-invitation-feedback',
+  'update-role'
 ])
 const invitationAccount = defineModel('invitationAccount', { type: String, default: '' })
 const invitePanelRef = ref(null)
+const openRoleMenuUserId = ref(null)
 const vFocus = {
   mounted(element) {
     element.focus()
@@ -72,6 +88,28 @@ const vFocus = {
 defineExpose({
   contains: (target) => Boolean(invitePanelRef.value?.contains(target))
 })
+
+function toggleRoleMenu(userId) {
+  if (String(props.memberRolePendingUserId) === String(userId)) {
+    return
+  }
+
+  openRoleMenuUserId.value = String(openRoleMenuUserId.value) === String(userId) ? null : userId
+}
+
+function selectMemberRole(member, role) {
+  openRoleMenuUserId.value = null
+  emit('update-role', member, role)
+}
+
+function closeRoleMenuOnOutsidePointer(event) {
+  if (openRoleMenuUserId.value && !event.target.closest?.('.member-role-control')) {
+    openRoleMenuUserId.value = null
+  }
+}
+
+onMounted(() => document.addEventListener('pointerdown', closeRoleMenuOnOutsidePointer))
+onBeforeUnmount(() => document.removeEventListener('pointerdown', closeRoleMenuOnOutsidePointer))
 </script>
 
 <template>
@@ -97,12 +135,13 @@ defineExpose({
     <span><b>{{ members.length }}</b> 位成员</span>
     <span class="group-role-summary">
       <Crown v-if="group.currentUserRole === 'OWNER'" :size="13" />
+      <ShieldCheck v-else-if="group.currentUserRole === 'ADMIN'" :size="13" />
       <UsersRound v-else :size="13" />
       {{ roleLabel }}
     </span>
     <span>创建于 {{ formatGroupDate(group.createdAt) }}</span>
     <button
-      v-if="group.currentUserRole === 'MEMBER'"
+      v-if="group.currentUserRole !== 'OWNER'"
       class="group-leave-trigger"
       type="button"
       @click="emit('leave')"
@@ -130,8 +169,12 @@ defineExpose({
         <h2>{{ group.name }}</h2>
         <p>{{ group.description || '这个工作组暂时没有填写描述。' }}</p>
       </div>
-      <span class="group-role-badge" :class="{ owner: group.currentUserRole === 'OWNER' }">
+      <span
+        class="group-role-badge"
+        :class="{ owner: group.currentUserRole === 'OWNER', admin: group.currentUserRole === 'ADMIN' }"
+      >
         <Crown v-if="group.currentUserRole === 'OWNER'" :size="14" />
+        <ShieldCheck v-else-if="group.currentUserRole === 'ADMIN'" :size="14" />
         <UsersRound v-else :size="14" />
         {{ roleLabel }}
       </span>
@@ -202,6 +245,12 @@ defineExpose({
         </div>
       </header>
 
+      <p v-if="memberRoleError" class="member-role-feedback error" role="alert">{{ memberRoleError }}</p>
+      <p v-else-if="memberRoleMessage" class="member-role-feedback success" role="status">
+        <Check :size="14" />
+        <span>{{ memberRoleMessage }}</span>
+      </p>
+
       <div v-if="members.length" class="group-member-list">
         <article v-for="member in members" :key="member.userId" class="group-member-row">
           <span class="group-member-avatar">{{ groupInitial(member.username) }}</span>
@@ -209,8 +258,51 @@ defineExpose({
             <strong>{{ member.username }}</strong>
             <small>{{ String(member.userId) === String(group.ownerId) ? '工作组创建者' : '工作组成员' }}</small>
           </div>
-          <span class="group-member-role" :class="{ owner: member.role === 'OWNER' }">
+          <div v-if="group.currentUserRole === 'OWNER' && member.role !== 'OWNER'" class="member-role-control">
+            <button
+              class="group-member-role editable"
+              :class="{ admin: member.role === 'ADMIN', open: String(openRoleMenuUserId) === String(member.userId) }"
+              type="button"
+              :disabled="String(memberRolePendingUserId) === String(member.userId)"
+              :aria-expanded="String(openRoleMenuUserId) === String(member.userId)"
+              :aria-label="`修改 ${member.username} 的角色，当前为${groupRoleLabel(member.role)}`"
+              @click="toggleRoleMenu(member.userId)"
+            >
+              <RefreshCw v-if="String(memberRolePendingUserId) === String(member.userId)" class="spin-icon" :size="13" />
+              <ShieldCheck v-else-if="member.role === 'ADMIN'" :size="13" />
+              <UsersRound v-else :size="13" />
+              {{ groupRoleLabel(member.role) }}
+              <ChevronDown :size="12" />
+            </button>
+
+            <Transition name="property-reveal">
+              <div v-if="String(openRoleMenuUserId) === String(member.userId)" class="member-role-menu" role="menu">
+                <button
+                  type="button"
+                  :class="{ active: member.role === 'ADMIN' }"
+                  role="menuitem"
+                  @click="selectMemberRole(member, 'ADMIN')"
+                >
+                  <span><ShieldCheck :size="14" /></span>
+                  <span><strong>管理员</strong><small>协助管理工作组</small></span>
+                  <Check v-if="member.role === 'ADMIN'" :size="13" />
+                </button>
+                <button
+                  type="button"
+                  :class="{ active: member.role === 'MEMBER' }"
+                  role="menuitem"
+                  @click="selectMemberRole(member, 'MEMBER')"
+                >
+                  <span><UsersRound :size="14" /></span>
+                  <span><strong>成员</strong><small>参与工作组协作</small></span>
+                  <Check v-if="member.role === 'MEMBER'" :size="13" />
+                </button>
+              </div>
+            </Transition>
+          </div>
+          <span v-else class="group-member-role" :class="{ owner: member.role === 'OWNER', admin: member.role === 'ADMIN' }">
             <Crown v-if="member.role === 'OWNER'" :size="13" />
+            <ShieldCheck v-else-if="member.role === 'ADMIN'" :size="13" />
             <UsersRound v-else :size="13" />
             {{ groupRoleLabel(member.role) }}
           </span>

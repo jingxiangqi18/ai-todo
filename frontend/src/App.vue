@@ -62,7 +62,8 @@ import {
   registerUser,
   updateTaskStep,
   updateTask,
-  updateTaskStatus
+  updateTaskStatus,
+  updateGroupMemberRole
 } from './services/api'
 import { parseAdvice } from './utils/content'
 import {
@@ -71,7 +72,6 @@ import {
   formatDateLabel,
   formatFullDateTime,
   formatShortDate,
-  formatTaskDateTime,
   formatTimeLabel,
   getNextWeekEndDate,
   parseLocalDateTime,
@@ -133,6 +133,9 @@ const isGroupComposerOpen = ref(false)
 const isGroupSubmitting = ref(false)
 const groupListError = ref('')
 const groupDetailError = ref('')
+const memberRoleError = ref('')
+const memberRoleMessage = ref('')
+const memberRolePendingUserId = ref(null)
 const groupFormError = ref('')
 const isGroupInviteOpen = ref(false)
 const isGroupInviteSubmitting = ref(false)
@@ -1175,6 +1178,9 @@ function logout() {
   groupMembers.value = []
   groupListError.value = ''
   groupDetailError.value = ''
+  memberRoleError.value = ''
+  memberRoleMessage.value = ''
+  memberRolePendingUserId.value = null
   isGroupComposerOpen.value = false
   Object.assign(taskStats, {
     total: 0,
@@ -1225,6 +1231,8 @@ async function selectView(key) {
   selectedGroup.value = null
   groupMembers.value = []
   groupDetailError.value = ''
+  memberRoleError.value = ''
+  memberRoleMessage.value = ''
   resetGroupInvitation()
   closeGroupComposer()
   activeView.value = key
@@ -2323,7 +2331,7 @@ async function handleCreateInvitation() {
 }
 
 async function openGroupLeaveConfirm() {
-  if (!selectedGroup.value || selectedGroup.value.currentUserRole !== 'MEMBER') {
+  if (!selectedGroup.value || selectedGroup.value.currentUserRole === 'OWNER') {
     return
   }
 
@@ -2387,6 +2395,8 @@ async function selectGroup(group) {
   selectedGroup.value = normalizedGroup
   groupMembers.value = []
   groupDetailError.value = ''
+  memberRoleError.value = ''
+  memberRoleMessage.value = ''
   isGroupDetailLoading.value = true
   isSidebarOpen.value = false
   isFilterOpen.value = false
@@ -2422,6 +2432,42 @@ async function selectGroup(group) {
   }
 
   isGroupDetailLoading.value = false
+}
+
+async function handleUpdateGroupMemberRole(member, role) {
+  if (
+    !selectedGroup.value ||
+    selectedGroup.value.currentUserRole !== 'OWNER' ||
+    member.role === 'OWNER' ||
+    member.role === role ||
+    memberRolePendingUserId.value
+  ) {
+    return
+  }
+
+  const groupId = selectedGroup.value.id
+  memberRoleError.value = ''
+  memberRoleMessage.value = ''
+  memberRolePendingUserId.value = member.userId
+
+  try {
+    const updatedMember = await updateGroupMemberRole(groupId, member.userId, role)
+
+    if (String(selectedGroup.value?.id) !== String(groupId)) {
+      return
+    }
+
+    groupMembers.value = groupMembers.value.map((item) => (
+      String(item.userId) === String(updatedMember.userId) ? updatedMember : item
+    ))
+    memberRoleMessage.value = `已将 ${updatedMember.username} 设为${groupRoleLabel(updatedMember.role)}。`
+  } catch (error) {
+    if (String(selectedGroup.value?.id) === String(groupId)) {
+      memberRoleError.value = error.message || '成员角色修改失败，请稍后重试。'
+    }
+  } finally {
+    memberRolePendingUserId.value = null
+  }
 }
 
 function resetGroupForm() {
@@ -2646,6 +2692,9 @@ function removeCreateStep(stepId) {
         :is-invitation-valid="isInvitationValid"
         :invitation-error="invitationError"
         :invitation-message="invitationMessage"
+        :member-role-pending-user-id="memberRolePendingUserId"
+        :member-role-error="memberRoleError"
+        :member-role-message="memberRoleMessage"
         @open-sidebar="isSidebarOpen = true"
         @create-group="openGroupComposer"
         @leave="openGroupLeaveConfirm"
@@ -2654,6 +2703,7 @@ function removeCreateStep(stepId) {
         @close-invite="closeGroupInvite"
         @submit-invite="handleCreateInvitation"
         @clear-invitation-feedback="invitationError = ''; invitationMessage = ''"
+        @update-role="handleUpdateGroupMemberRole"
       />
 
       <TaskWorkspace

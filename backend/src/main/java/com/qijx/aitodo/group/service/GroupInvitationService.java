@@ -49,7 +49,7 @@ public class GroupInvitationService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "工作组不存在");
         }
 
-        ensureOwner(group, inviterId);
+        ensureOwnerOrAdmin(group, inviterId);
 
         User invitee = findInviteeByAccount(account);
         User inviter = userMapper.selectOne(
@@ -232,5 +232,21 @@ public class GroupInvitationService {
         response.setHandledAt(invitation.getHandledAt());
 
         return response;
+    }
+
+    private void ensureOwnerOrAdmin(TaskGroup group, Long operatorId){
+        TaskGroupMember membership = taskGroupMemberMapper.selectOne(
+            new LambdaQueryWrapper<TaskGroupMember>()
+                    .eq(TaskGroupMember::getGroupId, group.getId())
+                    .eq(TaskGroupMember::getUserId, operatorId)
+        );
+
+        if(membership == null){
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "成员关系不存在");
+        }
+
+        if(!"ADMIN".equals(membership.getRole()) && !"OWNER".equals(membership.getRole())){
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "只有管理员或负责人可以进行该操作");
+        }
     }
 }

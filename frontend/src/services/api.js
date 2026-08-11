@@ -332,3 +332,10 @@ export function leaveGroup(groupId) {
     method: 'DELETE'
   })
 }
+
+export function updateGroupMemberRole(groupId, memberUserId, role) {
+  return request(`/groups/${groupId}/members/${memberUserId}/role`, {
+    method: 'PATCH',
+    body: JSON.stringify({ role })
+  })
+}

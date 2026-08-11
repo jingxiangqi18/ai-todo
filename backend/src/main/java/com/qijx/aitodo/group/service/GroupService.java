@@ -13,8 +13,6 @@ import com.qijx.aitodo.group.dto.GroupCreateRequest;
 import com.qijx.aitodo.group.dto.GroupMemberResponse;
 import com.qijx.aitodo.group.dto.GroupMemberRoleUpdateRequest;
 import com.qijx.aitodo.group.dto.GroupResponse;
-import com.qijx.aitodo.group.dto.InvitationCreateRequest;
-import com.qijx.aitodo.group.dto.InvitationResponse;
 import com.qijx.aitodo.group.entity.TaskGroup;
 import com.qijx.aitodo.group.entity.TaskGroupMember;
 import com.qijx.aitodo.group.mapper.TaskGroupMapper;

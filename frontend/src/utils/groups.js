@@ -3,6 +3,7 @@ import { parseLocalDateTime } from './dateTime'
 export function groupRoleLabel(role) {
   const labels = {
     OWNER: '负责人',
+    ADMIN: '管理员',
     MEMBER: '成员'
   }
 

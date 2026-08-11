@@ -6,6 +6,7 @@ import {
   LogOut,
   Plus,
   RefreshCw,
+  ShieldCheck,
   UserRound,
   UsersRound,
   X
@@ -140,6 +141,7 @@ const emit = defineEmits([
             <span class="group-nav-avatar">{{ groupInitial(group.name) }}</span>
             <span class="group-nav-copy">{{ group.name }}</span>
             <Crown v-if="group.currentUserRole === 'OWNER'" class="group-nav-role" :size="13" />
+            <ShieldCheck v-else-if="group.currentUserRole === 'ADMIN'" class="group-nav-role" :size="13" />
             <UsersRound v-else class="group-nav-role" :size="13" />
           </button>
         </div>
