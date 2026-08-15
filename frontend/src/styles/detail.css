@@ -123,3 +123,227 @@
   padding-top: 18px;
 }
 
+.group-task-detail-scroll {
+  padding-inline: 24px;
+  background:
+    linear-gradient(145deg, rgb(232 239 245 / 58%), transparent 28%),
+    #fdfcfd;
+}
+
+.group-task-detail-header {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  padding-top: 22px;
+  background: rgb(253 252 253 / 94%);
+  backdrop-filter: blur(15px);
+}
+
+.group-task-detail-loading {
+  position: sticky;
+  z-index: 5;
+  top: 80px;
+  height: 2px;
+  overflow: hidden;
+  background: #e6e6ec;
+}
+
+.group-task-detail-loading span {
+  display: block;
+  width: 38%;
+  height: 100%;
+  background: linear-gradient(90deg, #78939b, #8e7b96);
+  animation: detail-loading-slide 1s ease-in-out infinite alternate;
+}
+
+@keyframes detail-loading-slide {
+  to { transform: translateX(165%); }
+}
+
+.group-task-detail-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+}
+
+.group-task-detail-error button {
+  min-height: 28px;
+  padding: 0 9px;
+  color: #925260;
+  background: #ffffff;
+  border: 1px solid #e8cbd2;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.group-task-detail-content {
+  display: grid;
+  gap: 18px;
+  padding: 20px 0 28px;
+}
+
+.group-task-detail-hero {
+  display: grid;
+  gap: 10px;
+  padding: 20px;
+  background:
+    linear-gradient(120deg, rgb(231 240 243 / 82%), transparent 48%),
+    linear-gradient(300deg, rgb(239 232 244 / 72%), transparent 52%),
+    #f9f8fa;
+  border: 1px solid #dedfe6;
+  border-radius: var(--radius-md);
+}
+
+.group-task-detail-hero > span {
+  color: #8d8195;
+  font-size: 8px;
+  font-weight: 780;
+}
+
+.group-task-detail-hero h2 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #30323d;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.38;
+}
+
+.group-task-detail-hero > div {
+  display: flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.group-task-detail-status,
+.group-task-detail-priority {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  min-height: 27px;
+  padding: 0 8px;
+  color: #6d7283;
+  background: rgb(255 255 255 / 74%);
+  border: 1px solid #dcdde5;
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  font-weight: 670;
+}
+
+.group-task-detail-status.status-IN_PROGRESS {
+  color: #557884;
+  background: #e8f2f3;
+  border-color: #cee2e5;
+}
+
+.group-task-detail-status.status-DONE {
+  color: #60766f;
+  background: #e9f0ed;
+  border-color: #d2e1db;
+}
+
+.group-task-detail-priority.priority-HIGH {
+  color: #9a5b68;
+  background: #f7eaed;
+  border-color: #ecd2d8;
+}
+
+.group-task-detail-priority.priority-MEDIUM {
+  color: #7c6882;
+  background: #f1ebf3;
+  border-color: #e2d8e5;
+}
+
+.group-task-detail-section {
+  padding: 17px 4px;
+  border-top: 1px solid #e2e2e8;
+}
+
+.group-task-detail-section > header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  color: #777b8b;
+  font-size: 10px;
+  font-weight: 690;
+}
+
+.group-task-assignment-detail > div {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+}
+
+.group-task-detail-avatar {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  color: #626b84;
+  background: linear-gradient(145deg, #eee9f3, #e5eff1);
+  border: 1px solid #dcdee6;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.group-task-assignment-detail > div > span:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.group-task-assignment-detail strong,
+.group-task-due-detail > strong {
+  color: #40434f;
+  font-size: 13px;
+  font-weight: 690;
+}
+
+.group-task-assignment-detail small {
+  color: #9697a2;
+  font-size: 9px;
+}
+
+.group-task-description-detail p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #585b68;
+  font-size: 12px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+}
+
+.group-task-activity-detail {
+  margin-top: 12px;
+}
+
+.group-task-activity-detail dl {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.group-task-activity-detail dl > div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.group-task-activity-detail dt {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  color: #92939e;
+  font-size: 9px;
+}
+
+.group-task-activity-detail dd {
+  margin: 0;
+  color: #595d69;
+  font-size: 10px;
+  font-weight: 620;
+  text-align: right;
+}

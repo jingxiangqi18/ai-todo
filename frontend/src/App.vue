@@ -4,6 +4,8 @@ import AiAdvisor from './components/ai/AiAdvisor.vue'
 import AuthView from './components/auth/AuthView.vue'
 import ConfirmationDialog from './components/common/ConfirmationDialog.vue'
 import GroupComposer from './components/groups/GroupComposer.vue'
+import GroupTaskComposer from './components/groups/GroupTaskComposer.vue'
+import GroupTaskDetail from './components/groups/GroupTaskDetail.vue'
 import GroupWorkspace from './components/groups/GroupWorkspace.vue'
 import InvitationCenter from './components/groups/InvitationCenter.vue'
 import AppSidebar from './components/layout/AppSidebar.vue'
@@ -28,6 +30,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  ShieldCheck,
   Sparkles,
   Star,
   Trash2,
@@ -39,6 +42,7 @@ import {
   acceptGroupInvitation,
   createGroup,
   createGroupInvitation,
+  createGroupTask,
   createTaskStep,
   createTaskStepsBatch,
   createTask,
@@ -47,6 +51,7 @@ import {
   generateTaskStepDrafts,
   getCurrentUser,
   getGroup,
+  getGroupTask,
   getTask,
   getTaskAdvice,
   getTaskReminders,
@@ -55,6 +60,7 @@ import {
   listPendingGroupInvitations,
   listTasks,
   listGroupMembers,
+  listGroupTasks,
   listGroups,
   leaveGroup,
   loginUser,
@@ -104,6 +110,7 @@ const isAiAdvisorOpen = ref(false)
 const deleteCandidate = ref(null)
 const isLogoutConfirmOpen = ref(false)
 const groupLeaveCandidate = ref(null)
+const memberRoleCandidate = ref(null)
 const isTaskDeleting = ref(false)
 const isGroupLeaving = ref(false)
 const deleteDialogError = ref('')
@@ -131,6 +138,17 @@ const isGroupListLoading = ref(false)
 const isGroupDetailLoading = ref(false)
 const isGroupComposerOpen = ref(false)
 const isGroupSubmitting = ref(false)
+const isGroupTaskComposerOpen = ref(false)
+const isGroupTaskSubmitting = ref(false)
+const isGroupTaskCustomDueOpen = ref(false)
+const groupTaskFormError = ref('')
+const createdGroupTask = ref(null)
+const groupTasks = ref([])
+const selectedGroupTask = ref(null)
+const isGroupTaskListLoading = ref(false)
+const isGroupTaskDetailLoading = ref(false)
+const groupTaskListError = ref('')
+const groupTaskDetailError = ref('')
 const groupListError = ref('')
 const groupDetailError = ref('')
 const memberRoleError = ref('')
@@ -185,6 +203,9 @@ let aiCopyTimer
 let taskStepStatsRequestId = 0
 let createStepDraftId = 0
 let groupDetailRequestId = 0
+let groupTaskListRequestId = 0
+let groupTaskDetailRequestId = 0
+let groupTaskReceiptTimer
 let suppressTaskClickUntil = 0
 
 const vFocus = {
@@ -204,6 +225,21 @@ const authForm = reactive({
 const groupForm = reactive({
   name: '',
   description: ''
+})
+
+const groupTaskForm = reactive({
+  title: '',
+  description: '',
+  assigneeId: '',
+  priority: 'MEDIUM'
+})
+
+const groupTaskDueParts = reactive({
+  year: '',
+  month: '',
+  day: '',
+  hour: '',
+  minute: ''
 })
 
 const taskForm = reactive({
@@ -256,6 +292,13 @@ const taskPage = reactive({
   pages: 1
 })
 
+const groupTaskPage = reactive({
+  page: 1,
+  size: 5,
+  total: 0,
+  pages: 1
+})
+
 const taskStats = reactive({
   total: 0,
   todo: 0,
@@ -280,6 +323,29 @@ const createTimeParts = computed(() => ({
   hour: createDueParts.hour,
   minute: createDueParts.minute
 }))
+const groupTaskDateParts = computed(() => ({
+  year: groupTaskDueParts.year,
+  month: groupTaskDueParts.month,
+  day: groupTaskDueParts.day
+}))
+const groupTaskTimeParts = computed(() => ({
+  hour: groupTaskDueParts.hour,
+  minute: groupTaskDueParts.minute
+}))
+const hasGroupTaskDueValue = computed(() => Object.values(groupTaskDueParts).some(Boolean))
+const groupTaskDueLabel = computed(() => {
+  const due = resolveGroupTaskDueValues()
+
+  if (due.error) {
+    return '日期或时间填写中'
+  }
+
+  if (!due.date) {
+    return '未设置截止时间'
+  }
+
+  return `${formatDateLabel(due.date)} · ${formatTimeLabel(due.time)}`
+})
 const hasCreateDueValue = computed(() => Object.values(createDueParts).some(Boolean))
 const createDueLabel = computed(() => {
   const due = resolveCreateDueValues()
@@ -350,7 +416,10 @@ const isGroupFormValid = computed(() => {
   return nameLength > 0 && nameLength <= 100 && groupForm.description.length <= 500
 })
 const selectedGroupRole = computed(() => groupRoleLabel(selectedGroup.value?.currentUserRole))
-const canInviteGroupMember = computed(() => selectedGroup.value?.currentUserRole === 'OWNER')
+const canInviteGroupMember = computed(() => (
+  selectedGroup.value?.currentUserRole === 'OWNER' || selectedGroup.value?.currentUserRole === 'ADMIN'
+))
+const canCreateGroupTask = computed(() => canInviteGroupMember.value)
 const isInvitationValid = computed(() => {
   const accountLength = invitationAccount.value.trim().length
   return accountLength > 0 && accountLength <= 100
@@ -431,10 +500,16 @@ const currentViewTaskSnapshot = computed(() => filterTasksForCurrentView(allTask
 const currentViewStats = computed(() => createTaskStats(currentViewTaskSnapshot.value))
 const visibleTasks = computed(() => tasks.value)
 const isGroupLeaveConfirmOpen = computed(() => Boolean(groupLeaveCandidate.value))
+const isMemberRoleConfirmOpen = computed(() => Boolean(memberRoleCandidate.value))
 const isConfirmationDialogOpen = computed(() => (
-  Boolean(deleteCandidate.value) || isLogoutConfirmOpen.value || isGroupLeaveConfirmOpen.value
+  Boolean(deleteCandidate.value) ||
+  isLogoutConfirmOpen.value ||
+  isGroupLeaveConfirmOpen.value ||
+  isMemberRoleConfirmOpen.value
 ))
-const isConfirmationPending = computed(() => isTaskDeleting.value || isGroupLeaving.value)
+const isConfirmationPending = computed(() => (
+  isTaskDeleting.value || isGroupLeaving.value || Boolean(memberRolePendingUserId.value)
+))
 const confirmationDialogContent = computed(() => {
   if (isLogoutConfirmOpen.value) {
     return {
@@ -461,6 +536,25 @@ const confirmationDialogContent = computed(() => {
       busyLabel: '正在退出',
       icon: LogOut,
       warningIcon: UsersRound
+    }
+  }
+
+  if (isMemberRoleConfirmOpen.value) {
+    const targetRole = memberRoleCandidate.value?.role
+    const targetRoleLabel = groupRoleLabel(targetRole)
+
+    return {
+      kind: 'member-role',
+      eyebrow: 'MEMBER ACCESS',
+      title: `将“${memberRoleCandidate.value?.username || '该成员'}”设为${targetRoleLabel}？`,
+      description: `确认调整其在“${memberRoleCandidate.value?.groupName || '当前工作组'}”中的协作角色。`,
+      warning: targetRole === 'ADMIN'
+        ? '管理员可以邀请新成员，角色调整仍由负责人操作'
+        : '调整后，该成员将不能再发起工作组邀请',
+      confirmLabel: '确认调整',
+      busyLabel: '正在调整',
+      icon: targetRole === 'ADMIN' ? ShieldCheck : UsersRound,
+      warningIcon: targetRole === 'ADMIN' ? ShieldCheck : UsersRound
     }
   }
 
@@ -535,6 +629,10 @@ const isAuthValid = computed(() => {
 })
 
 const isTaskValid = computed(() => taskForm.title.trim().length > 0 && taskForm.title.trim().length <= 100)
+const isGroupTaskValid = computed(() => {
+  const titleLength = groupTaskForm.title.trim().length
+  return titleLength > 0 && titleLength <= 100 && groupTaskForm.description.length <= 1000
+})
 const hasListFilters = computed(() => Boolean(listFilters.status || listFilters.priority))
 const hasServerQuery = computed(() => Boolean(listFilters.status || listFilters.priority || query.value.trim()))
 const emptyState = computed(() => {
@@ -606,6 +704,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', handleDocumentKeydown)
   window.clearTimeout(searchTimer)
   window.clearTimeout(aiCopyTimer)
+  window.clearTimeout(groupTaskReceiptTimer)
   document.body.classList.remove('modal-open')
 })
 
@@ -646,6 +745,16 @@ function handleDocumentKeydown(event) {
 
   if (isGroupComposerOpen.value && !isGroupSubmitting.value) {
     closeGroupComposer()
+    return
+  }
+
+  if (isGroupTaskComposerOpen.value && !isGroupTaskSubmitting.value) {
+    closeGroupTaskComposer()
+    return
+  }
+
+  if (selectedGroupTask.value) {
+    closeGroupTaskDetail()
     return
   }
 
@@ -1113,6 +1222,89 @@ async function refreshGroups() {
   }
 }
 
+function resetGroupTaskCollection() {
+  groupTaskListRequestId += 1
+  groupTaskDetailRequestId += 1
+  groupTasks.value = []
+  selectedGroupTask.value = null
+  isGroupTaskListLoading.value = false
+  isGroupTaskDetailLoading.value = false
+  groupTaskListError.value = ''
+  groupTaskDetailError.value = ''
+  Object.assign(groupTaskPage, {
+    page: 1,
+    total: 0,
+    pages: 1
+  })
+}
+
+async function refreshGroupTasks(page = groupTaskPage.page) {
+  const groupId = selectedGroup.value?.id
+
+  if (!groupId) {
+    resetGroupTaskCollection()
+    return
+  }
+
+  const requestId = ++groupTaskListRequestId
+  const targetPage = Math.max(1, Number(page) || 1)
+  isGroupTaskListLoading.value = true
+  groupTaskListError.value = ''
+
+  try {
+    const result = await listGroupTasks(groupId, targetPage, groupTaskPage.size)
+
+    if (
+      requestId !== groupTaskListRequestId ||
+      String(selectedGroup.value?.id) !== String(groupId)
+    ) {
+      return
+    }
+
+    groupTasks.value = Array.isArray(result?.records) ? result.records : []
+    Object.assign(groupTaskPage, {
+      page: Number(result?.page) || targetPage,
+      size: Number(result?.size) || groupTaskPage.size,
+      total: Number(result?.total) || 0,
+      pages: Math.max(1, Number(result?.pages) || 1)
+    })
+  } catch (error) {
+    if (
+      requestId === groupTaskListRequestId &&
+      String(selectedGroup.value?.id) === String(groupId)
+    ) {
+      groupTaskListError.value = error.message || '团队任务加载失败，请稍后重试。'
+      groupTasks.value = []
+    }
+  } finally {
+    if (requestId === groupTaskListRequestId) {
+      isGroupTaskListLoading.value = false
+    }
+  }
+}
+
+function changeGroupTaskPage(page) {
+  if (
+    isGroupTaskListLoading.value ||
+    page < 1 ||
+    page > groupTaskPage.pages ||
+    page === groupTaskPage.page
+  ) {
+    return
+  }
+
+  return refreshGroupTasks(page)
+}
+
+function changeGroupTaskPageSize(size) {
+  if (isGroupTaskListLoading.value || groupTaskPage.size === size) {
+    return
+  }
+
+  groupTaskPage.size = size
+  return refreshGroupTasks(1)
+}
+
 async function refreshPendingInvitations(showLoading = false) {
   if (showLoading) {
     isInvitationListLoading.value = true
@@ -1165,6 +1357,7 @@ function logout() {
   invitationActionMessage.value = ''
   acceptedInvitationGroup.value = null
   groupLeaveCandidate.value = null
+  memberRoleCandidate.value = null
   isGroupLeaving.value = false
   groupDetailRequestId += 1
   localStorage.removeItem('aiTodoToken')
@@ -1182,6 +1375,10 @@ function logout() {
   memberRoleMessage.value = ''
   memberRolePendingUserId.value = null
   isGroupComposerOpen.value = false
+  isGroupTaskComposerOpen.value = false
+  isGroupTaskSubmitting.value = false
+  createdGroupTask.value = null
+  resetGroupTaskCollection()
   Object.assign(taskStats, {
     total: 0,
     todo: 0,
@@ -1222,10 +1419,18 @@ function confirmDialogAction() {
     return confirmLeaveGroup()
   }
 
+  if (isMemberRoleConfirmOpen.value) {
+    return confirmUpdateGroupMemberRole()
+  }
+
   return confirmDeleteTask()
 }
 
 async function selectView(key) {
+  if (isGroupTaskSubmitting.value) {
+    return
+  }
+
   groupDetailRequestId += 1
   isGroupDetailLoading.value = false
   selectedGroup.value = null
@@ -1234,6 +1439,9 @@ async function selectView(key) {
   memberRoleError.value = ''
   memberRoleMessage.value = ''
   resetGroupInvitation()
+  closeGroupTaskComposer()
+  createdGroupTask.value = null
+  resetGroupTaskCollection()
   closeGroupComposer()
   activeView.value = key
   isSidebarOpen.value = false
@@ -1482,6 +1690,65 @@ function resolveCreateDueValues() {
   return resolveDuePartValues(createDueParts)
 }
 
+function applyGroupTaskDuePreset(preset) {
+  setGroupTaskDueParts(toLocalDateKey(resolveDuePresetDate(preset)), END_OF_DAY_TIME)
+  isGroupTaskCustomDueOpen.value = false
+}
+
+function isGroupTaskDuePresetActive(preset) {
+  const due = resolveGroupTaskDueValues()
+  return !due.error
+    && due.date === toLocalDateKey(resolveDuePresetDate(preset))
+    && due.time === END_OF_DAY_TIME
+}
+
+function clearGroupTaskDue() {
+  setGroupTaskDueParts('', '')
+  groupTaskFormError.value = ''
+}
+
+function toggleGroupTaskCustomDue() {
+  isGroupTaskCustomDueOpen.value = !isGroupTaskCustomDueOpen.value
+
+  if (isGroupTaskCustomDueOpen.value) {
+    nextTick(() => {
+      document.querySelector('.group-task-due-section .due-custom-fields')?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest'
+      })
+    })
+  }
+}
+
+function updateGroupTaskDatePart(part, value) {
+  const maxLength = part === 'year' ? 4 : 2
+  groupTaskDueParts[part] = String(value).replace(/\D/g, '').slice(0, maxLength)
+  groupTaskFormError.value = ''
+}
+
+function updateGroupTaskTimePart(part, value) {
+  groupTaskDueParts[part] = String(value).replace(/\D/g, '').slice(0, 2)
+  groupTaskFormError.value = ''
+}
+
+function setGroupTaskDueParts(date, time) {
+  const dateParts = splitDateParts(date)
+  const timeParts = splitTimeParts(time)
+
+  Object.assign(groupTaskDueParts, {
+    year: dateParts.year,
+    month: dateParts.month,
+    day: dateParts.day,
+    hour: timeParts.hour,
+    minute: timeParts.minute
+  })
+  groupTaskFormError.value = ''
+}
+
+function resolveGroupTaskDueValues() {
+  return resolveDuePartValues(groupTaskDueParts)
+}
+
 function applyEditDuePreset(preset) {
   setEditDueParts(toLocalDateKey(resolveDuePresetDate(preset)), END_OF_DAY_TIME)
   isEditCustomDueOpen.value = false
@@ -1658,6 +1925,7 @@ function closeConfirmationDialog() {
   deleteCandidate.value = null
   isLogoutConfirmOpen.value = false
   groupLeaveCandidate.value = null
+  memberRoleCandidate.value = null
   deleteDialogError.value = ''
   syncBodyModalState()
 }
@@ -2368,13 +2636,80 @@ async function confirmLeaveGroup() {
   groups.value = groups.value.filter((item) => String(item.id) !== String(group.id))
   selectedGroup.value = null
   groupMembers.value = []
+  createdGroupTask.value = null
   groupLeaveCandidate.value = null
   isGroupLeaving.value = false
   syncBodyModalState()
   await selectView('all')
 }
 
+async function openGroupTaskDetail(task) {
+  if (!selectedGroup.value || !task) {
+    return
+  }
+
+  if (isGroupTaskComposerOpen.value) {
+    closeGroupTaskComposer()
+  }
+
+  if (isGroupComposerOpen.value) {
+    closeGroupComposer()
+  }
+
+  if (isComposerOpen.value) {
+    closeComposer()
+  }
+
+  if (selectedTask.value) {
+    closeTaskDetail()
+  }
+
+  const groupId = selectedGroup.value.id
+  const taskId = task.id
+  const requestId = ++groupTaskDetailRequestId
+  selectedGroupTask.value = task
+  groupTaskDetailError.value = ''
+  isGroupTaskDetailLoading.value = true
+
+  try {
+    const detail = await getGroupTask(groupId, taskId)
+
+    if (
+      requestId === groupTaskDetailRequestId &&
+      String(selectedGroup.value?.id) === String(groupId) &&
+      String(selectedGroupTask.value?.id) === String(taskId)
+    ) {
+      selectedGroupTask.value = detail
+    }
+  } catch (error) {
+    if (requestId === groupTaskDetailRequestId) {
+      groupTaskDetailError.value = error.message || '团队任务详情加载失败，请稍后重试。'
+    }
+  } finally {
+    if (requestId === groupTaskDetailRequestId) {
+      isGroupTaskDetailLoading.value = false
+    }
+  }
+}
+
+function closeGroupTaskDetail() {
+  groupTaskDetailRequestId += 1
+  selectedGroupTask.value = null
+  groupTaskDetailError.value = ''
+  isGroupTaskDetailLoading.value = false
+}
+
+function retryGroupTaskDetail() {
+  if (selectedGroupTask.value) {
+    return openGroupTaskDetail(selectedGroupTask.value)
+  }
+}
+
 async function selectGroup(group) {
+  if (isGroupTaskSubmitting.value) {
+    return
+  }
+
   const normalizedGroup = normalizeGroup(group)
   const requestId = ++groupDetailRequestId
 
@@ -2392,8 +2727,14 @@ async function selectGroup(group) {
     closeGroupComposer()
   }
 
+  if (isGroupTaskComposerOpen.value) {
+    closeGroupTaskComposer()
+  }
+
+  resetGroupTaskCollection()
   selectedGroup.value = normalizedGroup
   groupMembers.value = []
+  createdGroupTask.value = null
   groupDetailError.value = ''
   memberRoleError.value = ''
   memberRoleMessage.value = ''
@@ -2401,6 +2742,8 @@ async function selectGroup(group) {
   isSidebarOpen.value = false
   isFilterOpen.value = false
   isReminderOpen.value = false
+
+  void refreshGroupTasks(1)
 
   const [detailResult, membersResult] = await Promise.allSettled([
     getGroup(normalizedGroup.id),
@@ -2434,7 +2777,7 @@ async function selectGroup(group) {
   isGroupDetailLoading.value = false
 }
 
-async function handleUpdateGroupMemberRole(member, role) {
+async function openMemberRoleConfirm(member, role) {
   if (
     !selectedGroup.value ||
     selectedGroup.value.currentUserRole !== 'OWNER' ||
@@ -2445,15 +2788,41 @@ async function handleUpdateGroupMemberRole(member, role) {
     return
   }
 
-  const groupId = selectedGroup.value.id
   memberRoleError.value = ''
   memberRoleMessage.value = ''
-  memberRolePendingUserId.value = member.userId
+  deleteDialogError.value = ''
+  memberRoleCandidate.value = {
+    groupId: selectedGroup.value.id,
+    groupName: selectedGroup.value.name,
+    userId: member.userId,
+    username: member.username,
+    role
+  }
+  syncBodyModalState()
+
+  await nextTick()
+  deleteCancelButtonRef.value?.focus()
+}
+
+async function confirmUpdateGroupMemberRole() {
+  const candidate = memberRoleCandidate.value
+
+  if (!candidate || memberRolePendingUserId.value) {
+    return
+  }
+
+  const groupId = candidate.groupId
+  memberRoleError.value = ''
+  memberRoleMessage.value = ''
+  deleteDialogError.value = ''
+  memberRolePendingUserId.value = candidate.userId
 
   try {
-    const updatedMember = await updateGroupMemberRole(groupId, member.userId, role)
+    const updatedMember = await updateGroupMemberRole(groupId, candidate.userId, candidate.role)
 
     if (String(selectedGroup.value?.id) !== String(groupId)) {
+      memberRoleCandidate.value = null
+      syncBodyModalState()
       return
     }
 
@@ -2461,9 +2830,13 @@ async function handleUpdateGroupMemberRole(member, role) {
       String(item.userId) === String(updatedMember.userId) ? updatedMember : item
     ))
     memberRoleMessage.value = `已将 ${updatedMember.username} 设为${groupRoleLabel(updatedMember.role)}。`
+    memberRoleCandidate.value = null
+    syncBodyModalState()
   } catch (error) {
+    deleteDialogError.value = error.message || '成员角色修改失败，请稍后重试。'
+
     if (String(selectedGroup.value?.id) === String(groupId)) {
-      memberRoleError.value = error.message || '成员角色修改失败，请稍后重试。'
+      memberRoleError.value = deleteDialogError.value
     }
   } finally {
     memberRolePendingUserId.value = null
@@ -2477,12 +2850,20 @@ function resetGroupForm() {
 }
 
 function openGroupComposer() {
+  if (selectedGroupTask.value) {
+    closeGroupTaskDetail()
+  }
+
   if (selectedTask.value) {
     closeTaskDetail()
   }
 
   if (isComposerOpen.value) {
     closeComposer()
+  }
+
+  if (isGroupTaskComposerOpen.value) {
+    closeGroupTaskComposer()
   }
 
   resetGroupForm()
@@ -2529,12 +2910,124 @@ async function handleCreateGroup() {
   }
 }
 
+function resetGroupTaskForm() {
+  groupTaskForm.title = ''
+  groupTaskForm.description = ''
+  groupTaskForm.assigneeId = ''
+  groupTaskForm.priority = 'MEDIUM'
+  setGroupTaskDueParts('', '')
+  isGroupTaskCustomDueOpen.value = false
+  groupTaskFormError.value = ''
+}
+
+function openGroupTaskComposer() {
+  if (!selectedGroup.value || !canCreateGroupTask.value || isGroupTaskSubmitting.value) {
+    return
+  }
+
+  if (selectedTask.value) {
+    closeTaskDetail()
+  }
+
+  if (selectedGroupTask.value) {
+    closeGroupTaskDetail()
+  }
+
+  if (isComposerOpen.value) {
+    closeComposer()
+  }
+
+  if (isGroupComposerOpen.value) {
+    closeGroupComposer()
+  }
+
+  resetGroupTaskForm()
+  isGroupTaskComposerOpen.value = true
+  isSidebarOpen.value = false
+}
+
+function closeGroupTaskComposer() {
+  if (isGroupTaskSubmitting.value) {
+    return
+  }
+
+  isGroupTaskComposerOpen.value = false
+  resetGroupTaskForm()
+}
+
+async function handleCreateGroupTask() {
+  groupTaskFormError.value = ''
+
+  if (!selectedGroup.value || !canCreateGroupTask.value) {
+    groupTaskFormError.value = '只有负责人和管理员可以创建团队任务。'
+    return
+  }
+
+  if (!isGroupTaskValid.value) {
+    groupTaskFormError.value = '请填写 1 到 100 个字符的标题，并将描述控制在 1000 个字符内。'
+    return
+  }
+
+  const due = resolveGroupTaskDueValues()
+
+  if (due.error) {
+    groupTaskFormError.value = due.error
+    return
+  }
+
+  const assignee = groupTaskForm.assigneeId
+    ? groupMembers.value.find((member) => String(member.userId) === String(groupTaskForm.assigneeId))
+    : null
+
+  if (groupTaskForm.assigneeId && !assignee) {
+    groupTaskFormError.value = '请选择当前工作组中的成员作为负责人。'
+    return
+  }
+
+  const groupId = selectedGroup.value.id
+  const payload = {
+    title: groupTaskForm.title.trim(),
+    description: groupTaskForm.description.trim() || null,
+    assigneeId: assignee?.userId ?? null,
+    priority: groupTaskForm.priority
+  }
+
+  if (due.date) {
+    payload.dueAt = `${due.date}T${due.time}`
+  }
+
+  isGroupTaskSubmitting.value = true
+
+  try {
+    const created = await createGroupTask(groupId, payload)
+
+    if (String(selectedGroup.value?.id) === String(groupId)) {
+      createdGroupTask.value = created
+      window.clearTimeout(groupTaskReceiptTimer)
+      groupTaskReceiptTimer = window.setTimeout(() => {
+        if (String(createdGroupTask.value?.id) === String(created.id)) {
+          createdGroupTask.value = null
+        }
+      }, 5000)
+    }
+
+    isGroupTaskComposerOpen.value = false
+    resetGroupTaskForm()
+    await refreshGroupTasks(1)
+  } catch (error) {
+    groupTaskFormError.value = error.message || '团队任务创建失败，请稍后重试。'
+  } finally {
+    isGroupTaskSubmitting.value = false
+  }
+}
+
 function openComposer() {
   groupDetailRequestId += 1
   isGroupDetailLoading.value = false
   selectedGroup.value = null
   groupMembers.value = []
   closeGroupComposer()
+  closeGroupTaskComposer()
   if (selectedTask.value) {
     closeTaskDetail()
   }
@@ -2631,7 +3124,10 @@ function removeCreateStep(stepId) {
   <main
     v-else
     class="todo-app"
-    :class="{ 'has-detail': selectedTask || isComposerOpen || isGroupComposerOpen, 'is-detail-resizing': isDetailResizing }"
+    :class="{
+      'has-detail': selectedTask || selectedGroupTask || isComposerOpen || isGroupComposerOpen || isGroupTaskComposerOpen,
+      'is-detail-resizing': isDetailResizing
+    }"
     :style="{ '--detail-panel-width': `${detailPanelWidth}px` }"
   >
     <AppSidebar
@@ -2686,6 +3182,13 @@ function removeCreateStep(stepId) {
         :pending-invitation-count="pendingInvitationCount"
         :detail-error="groupDetailError"
         :is-loading="isGroupDetailLoading"
+        :can-create-task="canCreateGroupTask"
+        :created-task="createdGroupTask"
+        :tasks="groupTasks"
+        :task-page="groupTaskPage"
+        :task-list-loading="isGroupTaskListLoading"
+        :task-list-error="groupTaskListError"
+        :selected-task-id="selectedGroupTask?.id"
         :can-invite="canInviteGroupMember"
         :is-invite-open="isGroupInviteOpen"
         :is-invite-submitting="isGroupInviteSubmitting"
@@ -2697,13 +3200,20 @@ function removeCreateStep(stepId) {
         :member-role-message="memberRoleMessage"
         @open-sidebar="isSidebarOpen = true"
         @create-group="openGroupComposer"
+        @create-task="openGroupTaskComposer"
+        @dismiss-created-task="createdGroupTask = null"
+        @open-task="openGroupTaskDetail"
+        @close-task="closeGroupTaskDetail"
+        @retry-tasks="refreshGroupTasks()"
+        @change-task-page="changeGroupTaskPage"
+        @change-task-page-size="changeGroupTaskPageSize"
         @leave="openGroupLeaveConfirm"
         @retry="selectGroup(selectedGroup)"
         @toggle-invite="toggleGroupInvite"
         @close-invite="closeGroupInvite"
         @submit-invite="handleCreateInvitation"
         @clear-invitation-feedback="invitationError = ''; invitationMessage = ''"
-        @update-role="handleUpdateGroupMemberRole"
+        @update-role="openMemberRoleConfirm"
       />
 
       <TaskWorkspace
@@ -2780,6 +3290,58 @@ function removeCreateStep(stepId) {
         @keydown="handleDeleteDialogKeydown"
       />
     </section>
+
+    <GroupTaskComposer
+      v-model:title="groupTaskForm.title"
+      v-model:description="groupTaskForm.description"
+      v-model:assignee-id="groupTaskForm.assigneeId"
+      v-model:priority="groupTaskForm.priority"
+      :open="isGroupTaskComposerOpen"
+      :group-name="selectedGroup?.name"
+      :members="groupMembers"
+      :submitting="isGroupTaskSubmitting"
+      :valid="isGroupTaskValid"
+      :error-message="groupTaskFormError"
+      :priority-options="priorityOptions"
+      :due-label="groupTaskDueLabel"
+      :has-due-value="hasGroupTaskDueValue"
+      :due-presets="duePresetOptions"
+      :is-due-preset-active="isGroupTaskDuePresetActive"
+      :custom-due-open="isGroupTaskCustomDueOpen"
+      :date-parts="groupTaskDateParts"
+      :time-parts="groupTaskTimeParts"
+      :panel-width="detailPanelWidth"
+      :panel-bounds="detailPanelBounds"
+      :resizing="isDetailResizing"
+      @close="closeGroupTaskComposer"
+      @submit="handleCreateGroupTask"
+      @clear-error="groupTaskFormError = ''"
+      @priority-change="groupTaskFormError = ''"
+      @clear-due="clearGroupTaskDue"
+      @apply-due-preset="applyGroupTaskDuePreset"
+      @toggle-custom-due="toggleGroupTaskCustomDue"
+      @update-date-part="updateGroupTaskDatePart"
+      @update-time-part="updateGroupTaskTimePart"
+      @resize-start="startDetailResize"
+      @resize-reset="resetDetailPanelWidth"
+      @resize-keydown="handleDetailResizeKeydown"
+    />
+
+    <GroupTaskDetail
+      v-if="selectedGroupTask"
+      :task="selectedGroupTask"
+      :group-name="selectedGroup?.name"
+      :loading="isGroupTaskDetailLoading"
+      :error-message="groupTaskDetailError"
+      :panel-width="detailPanelWidth"
+      :panel-bounds="detailPanelBounds"
+      :resizing="isDetailResizing"
+      @close="closeGroupTaskDetail"
+      @retry="retryGroupTaskDetail"
+      @resize-start="startDetailResize"
+      @resize-reset="resetDetailPanelWidth"
+      @resize-keydown="handleDetailResizeKeydown"
+    />
 
     <GroupComposer
       v-model:name="groupForm.name"

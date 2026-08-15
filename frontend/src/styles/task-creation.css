@@ -59,6 +59,203 @@
   gap: 20px;
 }
 
+.group-task-create-form {
+  gap: 0;
+}
+
+.group-task-create-intro {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 11px;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 12px;
+  background:
+    linear-gradient(112deg, rgb(228 239 243 / 84%), transparent 56%),
+    #f3eff6;
+  border: 1px solid #dfe0e8;
+  border-radius: var(--radius-md);
+}
+
+.group-task-create-intro > span {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  color: #667b8a;
+  background: rgb(255 255 255 / 78%);
+  border: 1px solid rgb(255 255 255 / 88%);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 18px rgb(70 76 99 / 8%);
+}
+
+.group-task-create-intro div {
+  display: grid;
+  gap: 3px;
+}
+
+.group-task-create-intro div small {
+  color: #8a8195;
+  font-size: 8px;
+  font-weight: 760;
+}
+
+.group-task-create-intro div strong {
+  color: #454754;
+  font-size: 12px;
+  font-weight: 710;
+}
+
+.group-task-create-intro > b {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 8px;
+  color: #6c7285;
+  background: rgb(255 255 255 / 72%);
+  border: 1px solid #dcdde5;
+  border-radius: var(--radius-sm);
+  font-size: 9px;
+  font-weight: 680;
+}
+
+.group-task-title-field input {
+  font-size: 17px;
+}
+
+.create-section-icon.assignee-icon {
+  color: #637d88;
+  background: #e8f0f2;
+}
+
+.group-assignee-section {
+  position: relative;
+  z-index: 3;
+}
+
+.group-assignee-control {
+  position: relative;
+}
+
+.group-assignee-trigger {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 18px;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 54px;
+  padding: 8px 11px;
+  color: #565a69;
+  background: rgb(255 255 255 / 80%);
+  border: 1px solid #dcdde5;
+  border-radius: var(--radius-md);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) ease-out, box-shadow var(--duration-fast) ease-out,
+    background var(--duration-fast) ease-out;
+}
+
+.group-assignee-trigger:hover,
+.group-assignee-trigger.open {
+  background: #ffffff;
+  border-color: #a7a4b4;
+  box-shadow: 0 0 0 4px rgb(117 111 142 / 8%);
+}
+
+.group-assignee-trigger > span:nth-child(2),
+.group-assignee-menu button > span:nth-child(2) {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.group-assignee-trigger strong,
+.group-assignee-menu strong {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 690;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-assignee-trigger small,
+.group-assignee-menu small {
+  color: #9697a3;
+  font-size: 9px;
+}
+
+.group-assignee-trigger > svg {
+  color: #8e909b;
+  transition: transform var(--duration-fast) ease-out;
+}
+
+.group-assignee-trigger.open > svg {
+  transform: rotate(180deg);
+}
+
+.group-assignee-avatar {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: #656a84;
+  background: linear-gradient(145deg, #f0ebf5, #e5f0f1);
+  border: 1px solid #dde0e8;
+  border-radius: var(--radius-md);
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.group-assignee-avatar.empty {
+  color: #8b8796;
+  background: #f0eff3;
+}
+
+.group-assignee-menu {
+  position: absolute;
+  z-index: 15;
+  top: calc(100% + 7px);
+  right: 0;
+  left: 0;
+  max-height: 248px;
+  padding: 6px;
+  overflow-y: auto;
+  background: rgb(253 252 253 / 97%);
+  border: 1px solid #dcdce5;
+  border-radius: var(--radius-md);
+  box-shadow: 0 18px 42px rgb(48 47 63 / 16%);
+  backdrop-filter: blur(16px);
+}
+
+.group-assignee-menu button {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 18px;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-height: 48px;
+  padding: 6px 8px;
+  color: #5b5e6d;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.group-assignee-menu button:hover {
+  background: #f1f0f5;
+}
+
+.group-assignee-menu button.active {
+  color: #4f556d;
+  background: linear-gradient(100deg, #eeeaf4, #e9f1f2);
+}
+
+.group-assignee-menu button > svg {
+  color: #6f788e;
+}
+
 .group-create-intro {
   display: grid;
   grid-template-columns: 46px minmax(0, 1fr);
@@ -1631,4 +1828,3 @@
   color: #984a56;
   background: #f7dfe4;
 }
-

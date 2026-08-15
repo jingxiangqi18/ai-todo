@@ -311,6 +311,26 @@ export function createGroupInvitation(groupId, payload) {
   })
 }
 
+export function createGroupTask(groupId, payload) {
+  return request(`/groups/${groupId}/tasks`, {
+    method: 'POST',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function listGroupTasks(groupId, page = 1, size = 10) {
+  const params = new URLSearchParams({
+    page: String(page),
+    size: String(size)
+  })
+
+  return request(`/groups/${groupId}/tasks?${params.toString()}`)
+}
+
+export function getGroupTask(groupId, taskId) {
+  return request(`/groups/${groupId}/tasks/${taskId}`)
+}
+
 export function listPendingGroupInvitations() {
   return request('/group-invitations/pending')
 }

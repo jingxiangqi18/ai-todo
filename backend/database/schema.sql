@@ -129,3 +129,65 @@ CREATE TABLE task_group_invitations(
     INDEX idx_task_group_invitations_inviter_id
         (inviter_id)
 );
+
+CREATE TABLE group_tasks(
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    group_id BIGINT NOT NULL,
+    creator_id BIGINT NOT NULL,
+    assignee_id BIGINT DEFAULT NULL,
+    title VARCHAR(100) NOT NULL,
+    description TEXT DEFAULT NULL,
+    status VARCHAR(15) NOT NULL DEFAULT 'TODO',
+    priority VARCHAR(10) NOT NULL DEFAULT 'MEDIUM',
+    due_at DATETIME DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_group_tasks_group_id_status
+        (group_id, status),
+
+    INDEX idx_group_tasks_assignee_id_status
+        (assignee_id, status),
+
+    CONSTRAINT fk_group_tasks_group
+        FOREIGN KEY (group_id)
+        REFERENCES task_groups(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT fk_group_tasks_creator
+        FOREIGN KEY (creator_id)
+        REFERENCES users(id),
+
+    CONSTRAINT fk_group_tasks_assignee
+        FOREIGN KEY (assignee_id)
+        REFERENCES users(id)
+);
+
+CREATE TABLE group_task_steps(
+    id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    group_task_id BIGINT NOT NULL,
+    creator_id BIGINT NOT NULL,
+    assignee_id BIGINT DEFAULT NULL,
+    title VARCHAR(100) NOT NULL,
+    completed TINYINT(1) NOT NULL DEFAULT 0,
+    step_order INT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_group_task_id_step_order (group_task_id, step_order),
+    INDEX idx_assignee_id_completed (assignee_id, completed),
+
+    CONSTRAINT fk_group_task_steps_task
+        FOREIGN KEY (group_task_id)
+        REFERENCES group_tasks(id)
+        ON DELETE CASCADE,
+
+    CONSTRAINT fk_group_task_steps_creator
+        FOREIGN KEY (creator_id)
+        REFERENCES users(id),
+
+    CONSTRAINT fk_group_task_steps_assignee
+        FOREIGN KEY (assignee_id)
+        REFERENCES users(id)
+);

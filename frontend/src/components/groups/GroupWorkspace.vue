@@ -1,20 +1,29 @@
 <script setup>
 import {
+  CalendarDays,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ClipboardPlus,
   Crown,
+  Flag,
   FolderPlus,
   LogOut,
+  ListTodo,
   Menu,
   RefreshCw,
   SendHorizontal,
   ShieldCheck,
   UserPlus,
+  UserRoundCheck,
   UsersRound,
   X
 } from '@lucide/vue'
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { formatDueAt } from '../../utils/dateTime'
 import { formatGroupDate, groupInitial, groupRoleLabel } from '../../utils/groups'
+import { priorityText, statusText } from '../../utils/tasks'
 
 const props = defineProps({
   group: {
@@ -38,6 +47,28 @@ const props = defineProps({
     default: ''
   },
   isLoading: Boolean,
+  canCreateTask: Boolean,
+  createdTask: {
+    type: Object,
+    default: null
+  },
+  tasks: {
+    type: Array,
+    default: () => []
+  },
+  taskPage: {
+    type: Object,
+    required: true
+  },
+  taskListLoading: Boolean,
+  taskListError: {
+    type: String,
+    default: ''
+  },
+  selectedTaskId: {
+    type: [String, Number],
+    default: null
+  },
   canInvite: Boolean,
   isInviteOpen: Boolean,
   isInviteSubmitting: Boolean,
@@ -67,6 +98,13 @@ const props = defineProps({
 const emit = defineEmits([
   'open-sidebar',
   'create-group',
+  'create-task',
+  'dismiss-created-task',
+  'open-task',
+  'close-task',
+  'retry-tasks',
+  'change-task-page',
+  'change-task-page-size',
   'leave',
   'retry',
   'toggle-invite',
@@ -78,6 +116,7 @@ const emit = defineEmits([
 const invitationAccount = defineModel('invitationAccount', { type: String, default: '' })
 const invitePanelRef = ref(null)
 const openRoleMenuUserId = ref(null)
+const activeWorkspaceSection = ref('tasks')
 const vFocus = {
   mounted(element) {
     element.focus()
@@ -102,11 +141,39 @@ function selectMemberRole(member, role) {
   emit('update-role', member, role)
 }
 
+function selectWorkspaceSection(section) {
+  if (activeWorkspaceSection.value === section) {
+    return
+  }
+
+  activeWorkspaceSection.value = section
+  openRoleMenuUserId.value = null
+
+  if (section === 'tasks' && props.isInviteOpen) {
+    emit('close-invite')
+  }
+
+  if (section === 'members') {
+    emit('close-task')
+  }
+}
+
 function closeRoleMenuOnOutsidePointer(event) {
   if (openRoleMenuUserId.value && !event.target.closest?.('.member-role-control')) {
     openRoleMenuUserId.value = null
   }
 }
+
+watch(() => props.group.id, () => {
+  activeWorkspaceSection.value = 'tasks'
+  openRoleMenuUserId.value = null
+})
+
+watch(() => props.createdTask?.id, (taskId) => {
+  if (taskId) {
+    activeWorkspaceSection.value = 'tasks'
+  }
+})
 
 onMounted(() => document.addEventListener('pointerdown', closeRoleMenuOnOutsidePointer))
 onBeforeUnmount(() => document.removeEventListener('pointerdown', closeRoleMenuOnOutsidePointer))
@@ -124,7 +191,24 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeRoleMenuO
     </div>
 
     <div class="board-primary-actions group-primary-actions">
-      <button class="primary-button group-create-trigger" type="button" @click="emit('create-group')">
+      <button
+        v-if="canCreateTask"
+        class="primary-button group-task-create-trigger"
+        type="button"
+        aria-label="新建团队任务"
+        title="新建团队任务"
+        @click="emit('create-task')"
+      >
+        <ClipboardPlus :size="17" />
+        <span>新建团队任务</span>
+      </button>
+      <button
+        class="group-create-trigger"
+        type="button"
+        aria-label="新建工作组"
+        title="新建工作组"
+        @click="emit('create-group')"
+      >
         <FolderPlus :size="17" />
         <span>新建工作组</span>
       </button>
@@ -132,6 +216,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeRoleMenuO
   </header>
 
   <div class="board-summary group-summary" aria-label="工作组概览">
+    <span><b>{{ taskPage.total }}</b> 项团队任务</span>
     <span><b>{{ members.length }}</b> 位成员</span>
     <span class="group-role-summary">
       <Crown v-if="group.currentUserRole === 'OWNER'" :size="13" />
@@ -180,10 +265,162 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeRoleMenuO
       </span>
     </header>
 
-    <div class="group-workspace-divider"></div>
+    <nav class="group-workspace-tabs" role="tablist" aria-label="工作组内容">
+      <button
+        type="button"
+        role="tab"
+        :class="{ active: activeWorkspaceSection === 'tasks' }"
+        :aria-selected="activeWorkspaceSection === 'tasks'"
+        aria-controls="group-tasks-panel"
+        @click="selectWorkspaceSection('tasks')"
+      >
+        <ListTodo :size="16" />
+        <span>团队任务</span>
+        <b>{{ taskPage.total }}</b>
+      </button>
+      <button
+        type="button"
+        role="tab"
+        :class="{ active: activeWorkspaceSection === 'members' }"
+        :aria-selected="activeWorkspaceSection === 'members'"
+        aria-controls="group-members-panel"
+        @click="selectWorkspaceSection('members')"
+      >
+        <UsersRound :size="16" />
+        <span>成员管理</span>
+        <b>{{ members.length }}</b>
+      </button>
+    </nav>
 
-    <section class="group-members-section">
-      <header>
+    <Transition name="workspace-view" mode="out-in">
+      <div v-if="activeWorkspaceSection === 'tasks'" id="group-tasks-panel" key="tasks" role="tabpanel" class="group-workspace-view">
+        <Transition name="group-task-receipt">
+          <article v-if="createdTask" class="group-task-receipt" aria-live="polite">
+            <span class="group-task-receipt-mark"><Check :size="17" /></span>
+            <div class="group-task-receipt-copy">
+              <small>团队任务已创建</small>
+              <strong>{{ createdTask.title }}</strong>
+            </div>
+            <div class="group-task-receipt-meta">
+              <span><UserRoundCheck :size="13" /> {{ createdTask.assigneeName || '暂未分配' }}</span>
+              <span :class="`priority-${createdTask.priority}`"><Flag :size="13" /> {{ priorityText(createdTask.priority) }}优先级</span>
+              <span><CalendarDays :size="13" /> {{ formatDueAt(createdTask.dueAt) }}</span>
+            </div>
+            <button type="button" aria-label="关闭任务创建结果" title="关闭" @click="emit('dismiss-created-task')">
+              <X :size="15" />
+            </button>
+          </article>
+        </Transition>
+
+        <section class="group-tasks-section">
+      <header class="group-section-header">
+        <div class="group-members-heading-copy group-tasks-heading-copy">
+          <span>团队任务</span>
+          <strong>{{ taskPage.total }}</strong>
+        </div>
+        <small>按创建时间排列</small>
+      </header>
+
+      <div v-if="taskListError" class="group-task-list-error" role="alert">
+        <span>{{ taskListError }}</span>
+        <button type="button" @click="emit('retry-tasks')">重新加载</button>
+      </div>
+
+      <div v-else-if="taskListLoading" class="group-task-list-loading" aria-label="正在加载团队任务">
+        <span v-for="index in 3" :key="index"><i></i><i></i><i></i></span>
+      </div>
+
+      <template v-else-if="tasks.length">
+        <div class="group-task-columns" aria-hidden="true">
+          <span>任务</span>
+          <span>负责人</span>
+          <span>状态</span>
+          <span>截止时间</span>
+        </div>
+
+        <div class="group-task-list">
+          <button
+            v-for="task in tasks"
+            :key="task.id"
+            type="button"
+            class="group-task-row"
+            :class="[`status-${task.status}`, { selected: String(selectedTaskId) === String(task.id) }]"
+            @click="emit('open-task', task)"
+          >
+            <span class="group-task-title-cell">
+              <i :class="`priority-${task.priority}`"><Flag :size="12" /></i>
+              <span>
+                <strong>{{ task.title }}</strong>
+                <small>{{ priorityText(task.priority) }}优先级 · {{ task.creatorName }} 创建</small>
+              </span>
+            </span>
+            <span class="group-task-assignee-cell">
+              <i>{{ task.assigneeName ? groupInitial(task.assigneeName) : '—' }}</i>
+              <span>{{ task.assigneeName || '未分配' }}</span>
+            </span>
+            <span class="group-task-status-cell" :class="`status-${task.status}`">
+              <Check v-if="task.status === 'DONE'" :size="12" />
+              <RefreshCw v-else-if="task.status === 'IN_PROGRESS'" :size="12" />
+              <span v-else class="status-dot"></span>
+              {{ statusText(task.status) }}
+            </span>
+            <time class="group-task-due-cell" :class="{ empty: !task.dueAt }">
+              <CalendarDays :size="13" />
+              {{ formatDueAt(task.dueAt) }}
+            </time>
+          </button>
+        </div>
+
+        <footer class="group-task-pagination">
+          <span>第 {{ taskPage.page }} / {{ taskPage.pages }} 页</span>
+          <div class="group-task-page-nav">
+            <button
+              type="button"
+              aria-label="上一页团队任务"
+              :disabled="taskPage.page <= 1"
+              @click="emit('change-task-page', taskPage.page - 1)"
+            >
+              <ChevronLeft :size="15" />
+            </button>
+            <button
+              type="button"
+              aria-label="下一页团队任务"
+              :disabled="taskPage.page >= taskPage.pages"
+              @click="emit('change-task-page', taskPage.page + 1)"
+            >
+              <ChevronRight :size="15" />
+            </button>
+          </div>
+          <div class="group-task-page-sizes" aria-label="团队任务每页数量">
+            <button
+              v-for="size in [5, 10, 20]"
+              :key="size"
+              type="button"
+              :class="{ active: taskPage.size === size }"
+              @click="emit('change-task-page-size', size)"
+            >
+              {{ size }}
+            </button>
+          </div>
+        </footer>
+      </template>
+
+      <div v-else class="group-tasks-empty">
+        <span><ListTodo :size="24" /></span>
+        <div>
+          <strong>暂无团队任务</strong>
+          <small>{{ canCreateTask ? '从一个清晰的协作事项开始' : '负责人创建的任务会显示在这里' }}</small>
+        </div>
+        <button v-if="canCreateTask" type="button" @click="emit('create-task')">
+          <ClipboardPlus :size="14" />
+          新建任务
+        </button>
+      </div>
+        </section>
+      </div>
+
+      <section v-else id="group-members-panel" key="members" role="tabpanel" class="group-members-section group-workspace-view">
+      <header class="group-section-header">
         <div class="group-members-heading-copy">
           <span>成员</span>
           <strong>{{ members.length }}</strong>
@@ -314,6 +551,7 @@ onBeforeUnmount(() => document.removeEventListener('pointerdown', closeRoleMenuO
         <UsersRound :size="28" />
         <span>暂无成员信息</span>
       </div>
-    </section>
+      </section>
+    </Transition>
   </section>
 </template>

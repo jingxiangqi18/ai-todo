@@ -80,7 +80,8 @@ defineExpose({
               class="delete-confirm-button"
               :class="{
                 'logout-confirm-button': content.kind === 'logout',
-                'leave-group-confirm-button': content.kind === 'leave-group'
+                'leave-group-confirm-button': content.kind === 'leave-group',
+                'member-role-confirm-button': content.kind === 'member-role'
               }"
               type="button"
               :disabled="pending"
