@@ -7,10 +7,14 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.qijx.aitodo.group.dto.GroupTaskAssigneeUpdateRequest;
 import com.qijx.aitodo.group.dto.GroupTaskCreateRequest;
 import com.qijx.aitodo.group.dto.GroupTaskPageResponse;
 import com.qijx.aitodo.group.dto.GroupTaskResponse;
+import com.qijx.aitodo.group.dto.GroupTaskStatusUpdateRequest;
+import com.qijx.aitodo.group.dto.GroupTaskUpdateRequest;
 import com.qijx.aitodo.group.entity.GroupTask;
 import com.qijx.aitodo.group.entity.TaskGroup;
 import com.qijx.aitodo.group.entity.TaskGroupMember;
@@ -100,7 +104,7 @@ public class GroupTaskService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "查询页大小不能小于1或者大于50");
         }
 
-        ensureGroupMember(userId, groupId);
+        findGroupMember(userId, groupId);
 
         Page<GroupTaskResponse> pageRequest = new Page<>(page, size);
 
@@ -118,7 +122,7 @@ public class GroupTaskService {
     }
 
     public GroupTaskResponse getGroupTaskDetail(Long userId, Long groupId, Long taskId){
-        ensureGroupMember(userId, groupId);
+        findGroupMember(userId, groupId);
 
         GroupTaskResponse response = groupTaskMapper.selectGroupTaskDetail(groupId, taskId);
 
@@ -127,6 +131,126 @@ public class GroupTaskService {
         }
 
         return response;
+    }
+
+    public GroupTaskResponse updateGroupTask(Long userId, Long groupId, Long taskId, GroupTaskUpdateRequest request){
+        TaskGroupMember membership = findGroupMember(userId, groupId);
+
+        ensureAdminOrOwner(membership);
+
+        GroupTask task = findGroupTask(groupId, taskId);
+
+        if(request.getTitle() != null){
+            String normalizedTitle = request.getTitle().trim();
+
+            if(normalizedTitle.isBlank()){
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "标题不能设为空");
+            }
+
+            task.setTitle(normalizedTitle);
+        }
+
+        if(request.getDescription() != null){
+            task.setDescription(request.getDescription());
+        }
+
+        if(request.getPriority() != null){
+            String normalizedPriority = resolvePriority(request.getPriority());
+
+            task.setPriority(normalizedPriority);
+        }
+
+        if(request.getDueAt() != null){
+            task.setDueAt(request.getDueAt());
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+
+        task.setUpdatedAt(now);
+
+        int updatedRows = groupTaskMapper.updateById(task);
+
+        if(updatedRows != 1){
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "更新失败，任务状态可能已经发生变化");
+        }
+
+        return toResponse(task);
+    }
+
+    public void deleteGroupTask(Long operatorId, Long groupId, Long taskId){
+        TaskGroupMember membership = findGroupMember(operatorId, groupId);
+
+        ensureAdminOrOwner(membership);
+
+        GroupTask task = findGroupTask(groupId, taskId);
+
+        int deleteRows = groupTaskMapper.deleteById(task.getId());
+
+        if(deleteRows != 1){
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "删除任务失败，任务状态可能已经发生变化");
+        }
+    }
+
+    public GroupTaskResponse updateGroupTaskStatus(Long operatorId, Long groupId, Long taskId, GroupTaskStatusUpdateRequest request){
+        TaskGroupMember membership = findGroupMember(operatorId, groupId);
+
+        GroupTask task = findGroupTask(groupId, taskId);
+
+        ensureCanUpdateStatus(operatorId, membership, task);
+
+        String normalizedStatus = resolveStatus(request.getStatus());
+
+        task.setStatus(normalizedStatus);
+
+        LocalDateTime now = LocalDateTime.now();
+        task.setUpdatedAt(now);
+
+        int updatedRows = groupTaskMapper.updateById(task);
+
+        if(updatedRows != 1){
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "更新失败，任务状态可能已经发生变化");
+        }
+
+        return toResponse(task);
+    }
+
+    public GroupTaskResponse updateGroupTaskAssignee(Long operatorId, Long groupId, Long taskId, GroupTaskAssigneeUpdateRequest request){
+        TaskGroupMember operatorMembership = findGroupMember(operatorId, groupId);
+
+        ensureAdminOrOwner(operatorMembership);
+
+        GroupTask task = findGroupTask(groupId, taskId);
+
+        LocalDateTime now = LocalDateTime.now();
+
+        int updatedRows;
+
+        if(request.getAssigneeId() != null){
+            TaskGroupMember assigneeMembership = findGroupMember(request.getAssigneeId(), groupId);
+
+            task.setAssigneeId(assigneeMembership.getUserId());
+            task.setUpdatedAt(now);
+
+            updatedRows = groupTaskMapper.updateById(task);
+        }else{
+            LambdaUpdateWrapper<GroupTask> updateWrapper = 
+                new LambdaUpdateWrapper<GroupTask>()
+                    .eq(GroupTask::getId, taskId)
+                    .eq(GroupTask::getGroupId, groupId)
+                    .set(GroupTask::getAssigneeId, null)
+                    .set(GroupTask::getUpdatedAt, now);
+
+            updatedRows = groupTaskMapper.update(null, updateWrapper);
+
+            task.setAssigneeId(null);
+            task.setUpdatedAt(now);
+        }
+
+        if(updatedRows != 1){
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "更新失败，任务状态可能已经发生变化");
+        }
+
+        return toResponse(task);
     }
 
     private String resolvePriority(String priority){
@@ -143,7 +267,21 @@ public class GroupTaskService {
         }
     }
 
-    private void ensureGroupMember(Long userId, Long groupId){
+    private String resolveStatus(String status){
+        if(status == null || status.isBlank()){
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "任务状态不能为空");
+        }
+
+        String normalizedStatus = status.trim();
+
+        if(!"TODO".equals(normalizedStatus) && !"IN_PROGRESS".equals(normalizedStatus) && !"DONE".equals(normalizedStatus)){
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "任务状态错误");
+        }
+
+        return normalizedStatus;
+    }
+
+    private TaskGroupMember findGroupMember(Long userId, Long groupId){
         TaskGroupMember membership = taskGroupMemberMapper.selectOne(
             new LambdaQueryWrapper<TaskGroupMember>()
                     .eq(TaskGroupMember::getUserId, userId)
@@ -152,6 +290,36 @@ public class GroupTaskService {
 
         if(membership == null){
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "该用户不属于当前小组");
+        }
+
+        return membership;
+    }
+
+    private GroupTask findGroupTask(Long groupId, Long taskId){
+        GroupTask task = groupTaskMapper.selectOne(
+            new LambdaQueryWrapper<GroupTask>()
+                    .eq(GroupTask::getGroupId, groupId)
+                    .eq(GroupTask::getId, taskId)
+        );
+
+        if(task == null){
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "该任务不存在");
+        }
+
+        return task;
+    }
+
+    private void ensureAdminOrOwner(TaskGroupMember membership){
+        if(!"ADMIN".equals(membership.getRole()) && !"OWNER".equals(membership.getRole())){
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅负责人和管理员可以进行该操作");
+        }
+    }
+
+    private void ensureCanUpdateStatus(Long operatorId, TaskGroupMember membership, GroupTask task){
+        if(!"ADMIN".equals(membership.getRole()) && !"OWNER".equals(membership.getRole())){
+            if(!operatorId.equals(task.getAssigneeId())){
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "权限不足");
+            }
         }
     }
 

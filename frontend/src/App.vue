@@ -46,6 +46,7 @@ import {
   createTaskStep,
   createTaskStepsBatch,
   createTask,
+  deleteGroupTask,
   deleteTaskStep,
   deleteTask,
   generateTaskStepDrafts,
@@ -69,6 +70,9 @@ import {
   updateTaskStep,
   updateTask,
   updateTaskStatus,
+  updateGroupTask,
+  updateGroupTaskAssignee,
+  updateGroupTaskStatus,
   updateGroupMemberRole
 } from './services/api'
 import { parseAdvice } from './utils/content'
@@ -111,7 +115,9 @@ const deleteCandidate = ref(null)
 const isLogoutConfirmOpen = ref(false)
 const groupLeaveCandidate = ref(null)
 const memberRoleCandidate = ref(null)
+const groupTaskDeleteCandidate = ref(null)
 const isTaskDeleting = ref(false)
+const isGroupTaskDeleting = ref(false)
 const isGroupLeaving = ref(false)
 const deleteDialogError = ref('')
 const selectedTask = ref(null)
@@ -147,6 +153,9 @@ const groupTasks = ref([])
 const selectedGroupTask = ref(null)
 const isGroupTaskListLoading = ref(false)
 const isGroupTaskDetailLoading = ref(false)
+const isGroupTaskSaving = ref(false)
+const isGroupTaskStatusSaving = ref(false)
+const isGroupTaskAssigneeSaving = ref(false)
 const groupTaskListError = ref('')
 const groupTaskDetailError = ref('')
 const groupListError = ref('')
@@ -420,6 +429,13 @@ const canInviteGroupMember = computed(() => (
   selectedGroup.value?.currentUserRole === 'OWNER' || selectedGroup.value?.currentUserRole === 'ADMIN'
 ))
 const canCreateGroupTask = computed(() => canInviteGroupMember.value)
+const canManageSelectedGroupTask = computed(() => canCreateGroupTask.value)
+const canUpdateSelectedGroupTaskStatus = computed(() => (
+  canManageSelectedGroupTask.value || (
+    selectedGroupTask.value?.assigneeId != null &&
+    String(selectedGroupTask.value.assigneeId) === String(user.value?.id)
+  )
+))
 const isInvitationValid = computed(() => {
   const accountLength = invitationAccount.value.trim().length
   return accountLength > 0 && accountLength <= 100
@@ -501,14 +517,19 @@ const currentViewStats = computed(() => createTaskStats(currentViewTaskSnapshot.
 const visibleTasks = computed(() => tasks.value)
 const isGroupLeaveConfirmOpen = computed(() => Boolean(groupLeaveCandidate.value))
 const isMemberRoleConfirmOpen = computed(() => Boolean(memberRoleCandidate.value))
+const isGroupTaskDeleteConfirmOpen = computed(() => Boolean(groupTaskDeleteCandidate.value))
 const isConfirmationDialogOpen = computed(() => (
   Boolean(deleteCandidate.value) ||
   isLogoutConfirmOpen.value ||
   isGroupLeaveConfirmOpen.value ||
-  isMemberRoleConfirmOpen.value
+  isMemberRoleConfirmOpen.value ||
+  isGroupTaskDeleteConfirmOpen.value
 ))
 const isConfirmationPending = computed(() => (
-  isTaskDeleting.value || isGroupLeaving.value || Boolean(memberRolePendingUserId.value)
+  isTaskDeleting.value ||
+  isGroupTaskDeleting.value ||
+  isGroupLeaving.value ||
+  Boolean(memberRolePendingUserId.value)
 ))
 const confirmationDialogContent = computed(() => {
   if (isLogoutConfirmOpen.value) {
@@ -555,6 +576,20 @@ const confirmationDialogContent = computed(() => {
       busyLabel: '正在调整',
       icon: targetRole === 'ADMIN' ? ShieldCheck : UsersRound,
       warningIcon: targetRole === 'ADMIN' ? ShieldCheck : UsersRound
+    }
+  }
+
+  if (isGroupTaskDeleteConfirmOpen.value) {
+    return {
+      kind: 'delete-group-task',
+      eyebrow: 'DELETE TEAM TASK',
+      title: '删除这个团队任务？',
+      description: `“${groupTaskDeleteCandidate.value?.title || '该团队任务'}”将从工作组中永久移除。`,
+      warning: '团队成员将无法再查看此任务，此操作无法撤销',
+      confirmLabel: '确认删除',
+      busyLabel: '正在删除',
+      icon: Trash2,
+      warningIcon: UsersRound
     }
   }
 
@@ -1229,6 +1264,9 @@ function resetGroupTaskCollection() {
   selectedGroupTask.value = null
   isGroupTaskListLoading.value = false
   isGroupTaskDetailLoading.value = false
+  isGroupTaskSaving.value = false
+  isGroupTaskStatusSaving.value = false
+  isGroupTaskAssigneeSaving.value = false
   groupTaskListError.value = ''
   groupTaskDetailError.value = ''
   Object.assign(groupTaskPage, {
@@ -1358,6 +1396,8 @@ function logout() {
   acceptedInvitationGroup.value = null
   groupLeaveCandidate.value = null
   memberRoleCandidate.value = null
+  groupTaskDeleteCandidate.value = null
+  isGroupTaskDeleting.value = false
   isGroupLeaving.value = false
   groupDetailRequestId += 1
   localStorage.removeItem('aiTodoToken')
@@ -1421,6 +1461,10 @@ function confirmDialogAction() {
 
   if (isMemberRoleConfirmOpen.value) {
     return confirmUpdateGroupMemberRole()
+  }
+
+  if (isGroupTaskDeleteConfirmOpen.value) {
+    return confirmDeleteGroupTask()
   }
 
   return confirmDeleteTask()
@@ -1926,6 +1970,7 @@ function closeConfirmationDialog() {
   isLogoutConfirmOpen.value = false
   groupLeaveCandidate.value = null
   memberRoleCandidate.value = null
+  groupTaskDeleteCandidate.value = null
   deleteDialogError.value = ''
   syncBodyModalState()
 }
@@ -2705,6 +2750,159 @@ function retryGroupTaskDetail() {
   }
 }
 
+function replaceGroupTask(updatedTask) {
+  if (!updatedTask) {
+    return
+  }
+
+  groupTasks.value = groupTasks.value.map((task) => (
+    String(task.id) === String(updatedTask.id) ? updatedTask : task
+  ))
+
+  if (String(selectedGroupTask.value?.id) === String(updatedTask.id)) {
+    selectedGroupTask.value = updatedTask
+  }
+
+  if (String(createdGroupTask.value?.id) === String(updatedTask.id)) {
+    createdGroupTask.value = updatedTask
+  }
+}
+
+async function handleUpdateGroupTask(payload) {
+  const groupId = selectedGroup.value?.id
+  const taskId = selectedGroupTask.value?.id
+
+  if (!groupId || !taskId || !canManageSelectedGroupTask.value || isGroupTaskSaving.value) {
+    return
+  }
+
+  groupTaskDetailError.value = ''
+  isGroupTaskSaving.value = true
+
+  try {
+    const updated = await updateGroupTask(groupId, taskId, payload)
+
+    if (String(selectedGroup.value?.id) === String(groupId)) {
+      replaceGroupTask(updated)
+    }
+  } catch (error) {
+    groupTaskDetailError.value = error.message || '团队任务更新失败，请稍后重试。'
+  } finally {
+    isGroupTaskSaving.value = false
+  }
+}
+
+async function handleUpdateGroupTaskStatus(status) {
+  const groupId = selectedGroup.value?.id
+  const taskId = selectedGroupTask.value?.id
+
+  if (
+    !groupId ||
+    !taskId ||
+    !canUpdateSelectedGroupTaskStatus.value ||
+    isGroupTaskStatusSaving.value ||
+    selectedGroupTask.value?.status === status
+  ) {
+    return
+  }
+
+  groupTaskDetailError.value = ''
+  isGroupTaskStatusSaving.value = true
+
+  try {
+    const updated = await updateGroupTaskStatus(groupId, taskId, status)
+
+    if (String(selectedGroup.value?.id) === String(groupId)) {
+      replaceGroupTask(updated)
+    }
+  } catch (error) {
+    groupTaskDetailError.value = error.message || '团队任务状态更新失败，请稍后重试。'
+  } finally {
+    isGroupTaskStatusSaving.value = false
+  }
+}
+
+async function handleUpdateGroupTaskAssignee(assigneeId) {
+  const groupId = selectedGroup.value?.id
+  const taskId = selectedGroupTask.value?.id
+
+  if (!groupId || !taskId || !canManageSelectedGroupTask.value || isGroupTaskAssigneeSaving.value) {
+    return
+  }
+
+  groupTaskDetailError.value = ''
+  isGroupTaskAssigneeSaving.value = true
+
+  try {
+    const updated = await updateGroupTaskAssignee(groupId, taskId, assigneeId)
+
+    if (String(selectedGroup.value?.id) === String(groupId)) {
+      replaceGroupTask(updated)
+    }
+  } catch (error) {
+    groupTaskDetailError.value = error.message || '任务负责人更新失败，请稍后重试。'
+  } finally {
+    isGroupTaskAssigneeSaving.value = false
+  }
+}
+
+async function openGroupTaskDeleteConfirm() {
+  const task = selectedGroupTask.value
+  const group = selectedGroup.value
+
+  if (!task || !group || !canManageSelectedGroupTask.value) {
+    return
+  }
+
+  groupTaskDeleteCandidate.value = {
+    id: task.id,
+    title: task.title,
+    groupId: group.id
+  }
+  deleteDialogError.value = ''
+  syncBodyModalState()
+
+  await nextTick()
+  deleteCancelButtonRef.value?.focus()
+}
+
+async function confirmDeleteGroupTask() {
+  const task = groupTaskDeleteCandidate.value
+
+  if (!task || isGroupTaskDeleting.value) {
+    return
+  }
+
+  deleteDialogError.value = ''
+  isGroupTaskDeleting.value = true
+
+  try {
+    await deleteGroupTask(task.groupId, task.id)
+  } catch (error) {
+    deleteDialogError.value = error.message || '删除团队任务失败，请稍后重试。'
+    isGroupTaskDeleting.value = false
+    return
+  }
+
+  const isCurrentGroup = String(selectedGroup.value?.id) === String(task.groupId)
+  const targetPage = groupTasks.value.length <= 1 && groupTaskPage.page > 1
+    ? groupTaskPage.page - 1
+    : groupTaskPage.page
+
+  if (String(createdGroupTask.value?.id) === String(task.id)) {
+    createdGroupTask.value = null
+  }
+
+  isGroupTaskDeleting.value = false
+  groupTaskDeleteCandidate.value = null
+  syncBodyModalState()
+
+  if (isCurrentGroup) {
+    closeGroupTaskDetail()
+    await refreshGroupTasks(targetPage)
+  }
+}
+
 async function selectGroup(group) {
   if (isGroupTaskSubmitting.value) {
     return
@@ -3331,13 +3529,27 @@ function removeCreateStep(stepId) {
       v-if="selectedGroupTask"
       :task="selectedGroupTask"
       :group-name="selectedGroup?.name"
+      :members="groupMembers"
+      :can-manage="canManageSelectedGroupTask"
+      :can-update-status="canUpdateSelectedGroupTaskStatus"
       :loading="isGroupTaskDetailLoading"
+      :saving="isGroupTaskSaving"
+      :status-saving="isGroupTaskStatusSaving"
+      :assignee-saving="isGroupTaskAssigneeSaving"
       :error-message="groupTaskDetailError"
+      :status-options="statusOptions"
+      :priority-options="priorityOptions"
+      :due-presets="duePresetOptions"
       :panel-width="detailPanelWidth"
       :panel-bounds="detailPanelBounds"
       :resizing="isDetailResizing"
       @close="closeGroupTaskDetail"
       @retry="retryGroupTaskDetail"
+      @save="handleUpdateGroupTask"
+      @status-change="handleUpdateGroupTaskStatus"
+      @assignee-change="handleUpdateGroupTaskAssignee"
+      @delete="openGroupTaskDeleteConfirm"
+      @clear-error="groupTaskDetailError = ''"
       @resize-start="startDetailResize"
       @resize-reset="resetDetailPanelWidth"
       @resize-keydown="handleDetailResizeKeydown"

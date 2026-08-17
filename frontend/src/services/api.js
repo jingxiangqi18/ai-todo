@@ -331,6 +331,33 @@ export function getGroupTask(groupId, taskId) {
   return request(`/groups/${groupId}/tasks/${taskId}`)
 }
 
+export function updateGroupTask(groupId, taskId, payload) {
+  return request(`/groups/${groupId}/tasks/${taskId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload)
+  })
+}
+
+export function updateGroupTaskStatus(groupId, taskId, status) {
+  return request(`/groups/${groupId}/tasks/${taskId}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status })
+  })
+}
+
+export function updateGroupTaskAssignee(groupId, taskId, assigneeId) {
+  return request(`/groups/${groupId}/tasks/${taskId}/assignee`, {
+    method: 'PATCH',
+    body: JSON.stringify({ assigneeId })
+  })
+}
+
+export function deleteGroupTask(groupId, taskId) {
+  return request(`/groups/${groupId}/tasks/${taskId}`, {
+    method: 'DELETE'
+  })
+}
+
 export function listPendingGroupInvitations() {
   return request('/group-invitations/pending')
 }

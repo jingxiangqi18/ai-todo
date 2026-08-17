@@ -181,12 +181,6 @@ public class GroupInvitationService {
         return invitee;
     }
 
-    private void ensureOwner(TaskGroup group, Long inviterId){
-        if(!inviterId.equals(group.getOwnerId())){
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "你不是当前工作组的组长");
-        }
-    }
-
     private void ensureNotMember(Long groupId, Long inviteeId){
         TaskGroupMember inviteeMember = taskGroupMemberMapper.selectOne(
             new LambdaQueryWrapper<TaskGroupMember>()
